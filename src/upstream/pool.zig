@@ -57,6 +57,7 @@ pub const Up = struct {
     tls_poll_out: bool = false,
     tls_flushing: bool = false,
     tls_reading: bool = false,
+    dirty: bool = false,
 };
 
 pub fn get(w: *Worker, ui: u32) *Up {
@@ -230,11 +231,24 @@ pub fn updateRecv(w: *Worker, ui: u32) void {
     }
 }
 
+/// Queues a flush for after the current completion (coalesces writes).
 pub fn flush(w: *Worker, ui: u32) void {
     const u = get(w, ui);
+    if (u.dirty) return;
+    u.dirty = true;
+    w.markDirty(.up, ui, w.ups.gen(ui));
+}
+
+pub fn flushNow(w: *Worker, ui: u32) void {
+    const u = get(w, ui);
+    u.dirty = false;
     if (u.state != .busy or u.out.inflight or u.out.isEmpty()) return;
     if (u.tls_mode == .user) return http.tlsFlushUp(w, ui);
-    const msg = u.out.prepare(&w.segs);
-    w.loop.sendmsg(u.fd, msg, udOf(w, .u_send, ui));
+    if (u.out.single(&w.segs)) |bytes| {
+        w.loop.send(u.fd, bytes, udOf(w, .u_send, ui));
+    } else {
+        const msg = u.out.prepare(&w.segs);
+        w.loop.sendmsg(u.fd, msg, udOf(w, .u_send, ui));
+    }
     u.pending += 1;
 }

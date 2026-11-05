@@ -68,7 +68,9 @@ worker x N (1 per core)    own io_uring (SINGLE_ISSUER|DEFER_TASKRUN), own
 - **TCP/L4**: `splice(2)` through a pipe pair, so bytes never enter userspace; ring-driven readiness; independent half-close per direction.
 - **TLS**: OpenSSL 3 behind a compile-time `TlsBackend` interface. The handshake runs on the socket, driven by ring readiness, with `SSL_OP_ENABLE_KTLS`. When the kernel `tls` module is loaded, the keys go into the socket and the zero-copy plaintext path above carries HTTPS unchanged. Otherwise the connection falls back to userspace TLS, which is allowed only when `"tls": {"require_ktls": false}` and is counted in `tls_userspace`. Only kTLS-capable suites are offered (AES-GCM, ChaCha20-Poly1305).
 - **Config**: immutable snapshots in one arena each, swapped with an atomic pointer; epoch-based reclamation once every worker has moved past.
-- **Memory**: no malloc on the request path. Pools are sized up front, but pages are only committed when first used (RSS is about 5 MB idle).
+- **Memory**: no malloc on the request path. Pools are sized up front, but pages are only committed when first used (about 10 MB PSS idle with 2 workers).
+- **Send path**: output is flushed once per completion, so a response head and a small body (≤ 2 KiB, copied after the head) go out as a single plain `send`; larger bodies are forwarded zero-copy with `sendmsg`.
+- **CPU pinning**: off by default, as in nginx. `--pin-cpus` pins worker N to CPU N; use it only on dedicated cores with IRQ affinity configured.
 
 Source layout: `src/runtime` (loop, buffer ring, timer wheel, worker),
 `src/http1` (parser, framing rules, codec), `src/proxy` (HTTP state

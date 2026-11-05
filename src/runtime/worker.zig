@@ -40,8 +40,8 @@ pub const Shared = struct {
     ring_fds: []std.atomic.Value(i32),
     /// Tuning that is fixed for the process lifetime.
     pbuf_size: u32 = 16 * 1024,
-    pbuf_count: u16 = 1024,
-    pin_cpus: bool = true,
+    pbuf_count: u16 = 256,
+    pin_cpus: bool = false,
 };
 
 /// Wake reasons carried in the MSG_RING CQE result.
@@ -96,6 +96,11 @@ pub const Worker = struct {
     /// iteration (reads are deferred to avoid re-entering the state
     /// machine from inside itself).
     tls_kicks: std.ArrayList(Reap) = .empty,
+    /// Connections with queued output, flushed once after the current
+    /// completion is handled (so a head and a small body coalesce into
+    /// one send).
+    dirty_downs: std.ArrayList(Reap) = .empty,
+    dirty_ups: std.ArrayList(Reap) = .empty,
     draining: bool = false,
     drain_deadline_ms: u64 = 0,
     /// Set by CPU-heavy work (TLS handshakes): flush queued SQEs right away
@@ -152,6 +157,8 @@ pub const Worker = struct {
         self.rearm_downs.deinit(self.gpa);
         self.rearm_ups.deinit(self.gpa);
         self.tls_kicks.deinit(self.gpa);
+        self.dirty_downs.deinit(self.gpa);
+        self.dirty_ups.deinit(self.gpa);
         self.eps.deinit(self.gpa);
         self.tunnels.deinit(self.gpa);
         self.ups.deinit(self.gpa);
@@ -206,6 +213,7 @@ pub const Worker = struct {
                 const n = self.loop.ring.copy_cqes(&self.cqes, 0) catch 0;
                 for (self.cqes[0..n]) |*cqe| {
                     self.dispatch(cqe);
+                    self.flushDirty();
                     if (self.flush_now or self.loop.ring.sq_ready() >= 64) {
                         self.flush_now = false;
                         _ = self.loop.ring.submit() catch {};
@@ -214,6 +222,7 @@ pub const Worker = struct {
                 if (n < self.cqes.len) break;
             }
             self.processTlsKicks();
+            self.flushDirty();
             self.processReap();
             self.processRearm();
             self.checkSnapshot();
@@ -280,6 +289,31 @@ pub const Worker = struct {
     pub fn needRearm(self: *Worker, kind: TimerKind, idx: u32, gen: u32) void {
         const list = if (kind == .down) &self.rearm_downs else &self.rearm_ups;
         list.append(self.gpa, .{ .kind = kind, .idx = idx, .gen = gen }) catch {};
+    }
+
+    pub fn markDirty(self: *Worker, kind: TimerKind, idx: u32, gen: u32) void {
+        const list = if (kind == .down) &self.dirty_downs else &self.dirty_ups;
+        list.append(self.gpa, .{ .kind = kind, .idx = idx, .gen = gen }) catch {
+            // Out of memory: flush right away instead.
+            if (kind == .down) http.flushDownNow(self, idx) else upool.flushNow(self, idx);
+        };
+    }
+
+    fn flushDirty(self: *Worker) void {
+        if (self.dirty_downs.items.len == 0 and self.dirty_ups.items.len == 0) return;
+        // Ups first: request bytes go out before we look at more input.
+        var i: usize = 0;
+        while (i < self.dirty_ups.items.len) : (i += 1) {
+            const r = self.dirty_ups.items[i];
+            if (self.ups.valid(r.idx, r.gen)) upool.flushNow(self, r.idx);
+        }
+        self.dirty_ups.clearRetainingCapacity();
+        i = 0;
+        while (i < self.dirty_downs.items.len) : (i += 1) {
+            const r = self.dirty_downs.items[i];
+            if (self.downs.valid(r.idx, r.gen)) http.flushDownNow(self, r.idx);
+        }
+        self.dirty_downs.clearRetainingCapacity();
     }
 
     pub fn tlsKick(self: *Worker, kind: TimerKind, idx: u32, gen: u32) void {

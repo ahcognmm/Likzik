@@ -90,6 +90,12 @@ pub const Loop = struct {
         s.user_data = ud;
     }
 
+    pub fn send(self: *Loop, fd: linux.fd_t, bytes: []const u8, ud: u64) void {
+        const s = self.sqe();
+        s.prep_send(fd, bytes, linux.MSG.NOSIGNAL);
+        s.user_data = ud;
+    }
+
     pub fn sendmsg(self: *Loop, fd: linux.fd_t, msg: *const linux.msghdr_const, ud: u64) void {
         const s = self.sqe();
         s.prep_sendmsg(fd, msg, linux.MSG.NOSIGNAL);

@@ -28,8 +28,8 @@ const usage =
     \\  -c, --config PATH     config file (default: likzik.json)
     \\  -t, --check           validate the config and exit
     \\  -w, --workers N       override the worker count
-    \\      --buffers N       provided recv buffers per worker (power of 2, default 1024)
-    \\      --no-pin          do not pin workers to CPUs
+    \\      --buffers N       provided recv buffers per worker (power of 2, default 256)
+    \\      --pin-cpus        pin worker N to CPU N (for dedicated cores with IRQ affinity)
     \\      --allow-old-kernel  allow kernels older than 6.14 (development)
     \\      --version         print the version and exit
     \\
@@ -39,9 +39,9 @@ const Args = struct {
     config: []const u8 = "likzik.json",
     check: bool = false,
     workers: ?u16 = null,
-    pin: bool = true,
+    pin: bool = false,
     allow_old_kernel: bool = false,
-    buffers: u16 = 1024,
+    buffers: u16 = 256,
 };
 
 fn parseArgs(list: []const [:0]const u8) !Args {
@@ -64,8 +64,10 @@ fn parseArgs(list: []const [:0]const u8) !Args {
             if (i >= list.len) return error.MissingValue;
             a.buffers = try std.fmt.parseInt(u16, list[i], 10);
             if (!std.math.isPowerOfTwo(a.buffers)) return error.BadArgs;
+        } else if (std.mem.eql(u8, s, "--pin-cpus")) {
+            a.pin = true;
         } else if (std.mem.eql(u8, s, "--no-pin")) {
-            a.pin = false;
+            a.pin = false; // the default; kept for compatibility
         } else if (std.mem.eql(u8, s, "--allow-old-kernel")) {
             a.allow_old_kernel = true;
         } else if (std.mem.eql(u8, s, "--version")) {

@@ -36,6 +36,8 @@ pub fn listen(addr: *const Address, backlog: u32) Error!linux.fd_t {
     try setInt(fd, linux.SOL.SOCKET, linux.SO.REUSEADDR, 1);
     try setInt(fd, linux.SOL.SOCKET, linux.SO.REUSEPORT, 1);
     if (addr.family() == linux.AF.INET6) try setInt(fd, linux.IPPROTO.IPV6, linux.IPV6.V6ONLY, 1);
+    // Accepted sockets inherit TCP_NODELAY: saves a setsockopt per connection.
+    try setInt(fd, linux.IPPROTO.TCP, linux.TCP.NODELAY, 1);
     _ = try check(linux.bind(fd, &addr.any, addr.len()));
     _ = try check(linux.listen(fd, backlog));
     return fd;

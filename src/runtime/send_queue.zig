@@ -77,6 +77,26 @@ pub const SendQueue = struct {
         self.bytes += seg.len;
     }
 
+    /// The only queued segment, when there is exactly one: it can go out
+    /// with a plain send (no msghdr/iovec to copy into the kernel).
+    pub fn single(self: *SendQueue, pool: *SegPool) ?[]const u8 {
+        const h = self.head orelse return null;
+        if (h != self.tail.?) return null;
+        self.inflight = true;
+        const s = pool.segs[h];
+        return s.ptr[0..s.len];
+    }
+
+    pub fn tailSeg(self: *const SendQueue, pool: *SegPool) ?*Seg {
+        const t = self.tail orelse return null;
+        return &pool.segs[t];
+    }
+
+    /// Adds bytes appended in place to the tail segment's memory.
+    pub fn grewTail(self: *SendQueue, n: usize) void {
+        self.bytes += n;
+    }
+
     /// Fills the iovec array from the queue head; returns the msghdr.
     pub fn prepare(self: *SendQueue, pool: *SegPool) *const linux.msghdr_const {
         var n: usize = 0;

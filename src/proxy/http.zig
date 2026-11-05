@@ -120,6 +120,12 @@ pub const Down = struct {
     tls_poll_out: bool = false,
     tls_flushing: bool = false,
     tls_reading: bool = false,
+    dirty: bool = false,
+    /// Wait for the client's FIN before closing (unread input possible).
+    linger_needed: bool = true,
+    /// The connection closes because of an error response: the rest of a
+    /// bad request may still be unread, so always linger.
+    error_close: bool = false,
 
     fn ip(self: *const Down) []const u8 {
         return self.ip_buf[0..self.ip_len];
@@ -148,7 +154,7 @@ pub fn accept(w: *Worker, fd: linux.fd_t, slot: u16) void {
     };
     const d = get(w, di);
     d.* = .{ .fd = fd, .listener = slot };
-    socket.setInt(fd, linux.IPPROTO.TCP, linux.TCP.NODELAY, 1) catch {};
+    // TCP_NODELAY is inherited from the listening socket.
     const peer = socket.peerAddress(fd);
     d.ip_len = @intCast(peer.formatIp(&d.ip_buf).len);
     w.listeners[slot].conns += 1;
@@ -643,6 +649,11 @@ fn forwardReqBody(w: *Worker, di: u32, data: []const u8, owner: sq.Owner) ?usize
         w.schedule(&d.timer, .down, di, gen(w, di), d.timeout_ms);
         if (d.up) |ui| {
             const u = upool.get(w, ui);
+            if (tryCoalesce(w, &u.out, data[0..n])) {
+                upool.flush(w, ui);
+                updateDownRecv(w, di);
+                return n;
+            }
             const held = holdForQueue(w, data[0..n], owner) orelse {
                 closeDown(w, di);
                 return null;
@@ -672,6 +683,30 @@ fn holdOwner(w: *Worker, o: sq.Owner) void {
 /// instead, so a slow peer cannot pin the shared ring and starve every
 /// other connection on this worker. Returns the (possibly new) owner and
 /// slice, or null when out of memory.
+/// Small bytes are copied into the free space after the queue's tail
+/// segment when that segment is a block only the queue references (a
+/// head we just serialized). The pair then goes out as one plain send and
+/// the source buffer is not held at all.
+const coalesce_max = 2048;
+
+fn tryCoalesce(w: *Worker, q: *sq.SendQueue, bytes: []const u8) bool {
+    if (bytes.len > coalesce_max or q.inflight) return false;
+    const t = q.tailSeg(&w.segs) orelse return false;
+    const b = switch (t.owner) {
+        .block => |id| id,
+        else => return false,
+    };
+    if (w.blocks.refs[b] != 1) return false;
+    const base = @intFromPtr(w.blocks.bytes(b));
+    const end = @intFromPtr(t.ptr) + t.len;
+    if (end < base or end + bytes.len > base + blocks_mod.block_size) return false;
+    const dst: [*]u8 = @ptrFromInt(end);
+    @memcpy(dst[0..bytes.len], bytes);
+    t.len += @intCast(bytes.len);
+    q.grewTail(bytes.len);
+    return true;
+}
+
 fn holdForQueue(w: *Worker, bytes: []const u8, o: sq.Owner) ?struct { owner: sq.Owner, bytes: []const u8 } {
     if (o == .pbuf and w.bufs.out * 4 > @as(u32, w.bufs.count) * 3) {
         var copied: ?sq.Owner = null;
@@ -1162,6 +1197,11 @@ fn forwardRespBody(w: *Worker, di: u32, data: []const u8, owner: sq.Owner) ?usiz
 }
 
 fn queueDownHeld(w: *Worker, di: u32, bytes: []const u8, owner: sq.Owner) void {
+    const d = get(w, di);
+    if (bytes.len > 0 and tryCoalesce(w, &d.out, bytes)) {
+        markDownDirty(w, di);
+        return;
+    }
     const held = holdForQueue(w, bytes, owner) orelse return closeDown(w, di);
     queueDown(w, di, held.bytes, held.owner);
 }
@@ -1178,7 +1218,7 @@ fn queueDown(w: *Worker, di: u32, bytes: []const u8, owner: sq.Owner) void {
         closeDown(w, di);
         return;
     };
-    flushDown(w, di);
+    markDownDirty(w, di);
     if (d.up) |ui| if (d.out.bytes > high_water) upool.updateRecv(w, ui);
 }
 
@@ -1262,6 +1302,7 @@ fn endExchange(w: *Worker, di: u32) void {
     d.requests += 1;
     d.cluster = null;
     d.resp_head_done = false;
+    const req_fully_read = d.req.done;
     d.resp = .{};
     d.req = .{};
     if (d.phase == .closing) return;
@@ -1272,7 +1313,10 @@ fn endExchange(w: *Worker, di: u32) void {
         d.phase = .head;
         d.close_after_flush = true;
         w.wheel.cancel(&d.timer);
-        if (d.out.isEmpty() and !d.out.inflight) beginLinger(w, di) else updateDownRecv(w, di);
+        // A complete exchange with nothing buffered: close right away (a
+        // client FIN or unread bytes can't be lost). Otherwise linger.
+        d.linger_needed = !req_fully_read or !d.in.isEmpty() or d.error_close;
+        if (d.out.isEmpty() and !d.out.inflight) closeOrLinger(w, di) else updateDownRecv(w, di);
         return;
     }
     d.phase = .head;
@@ -1292,7 +1336,10 @@ fn localError(w: *Worker, di: u32, status: u16, close: bool) void {
     }
     detachUp(w, di, true);
     if (d.phase == .exchange and !d.req.done) d.keep_alive = false;
-    if (close) d.keep_alive = false;
+    if (close) {
+        d.keep_alive = false;
+        d.error_close = true;
+    }
     if (w.draining) d.keep_alive = false;
     if (d.phase == .head) d.phase = .exchange; // local response counts as an exchange
     const blk = w.blocks.alloc() orelse {
@@ -1313,6 +1360,18 @@ fn localError(w: *Worker, di: u32, status: u16, close: bool) void {
 
 // ---------------------------------------------------------------- send
 
+fn markDownDirty(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (d.dirty) return;
+    d.dirty = true;
+    w.markDirty(.down, di, gen(w, di));
+}
+
+pub fn flushDownNow(w: *Worker, di: u32) void {
+    get(w, di).dirty = false;
+    flushDown(w, di);
+}
+
 fn flushDown(w: *Worker, di: u32) void {
     const d = get(w, di);
     if (d.phase == .closing or d.out.inflight or d.out.isEmpty()) return;
@@ -1321,8 +1380,12 @@ fn flushDown(w: *Worker, di: u32) void {
         .handshake => return,
         .none, .ktls => {},
     }
-    const msg = d.out.prepare(&w.segs);
-    w.loop.sendmsg(d.fd, msg, udOf(w, .d_send, di));
+    if (d.out.single(&w.segs)) |bytes| {
+        w.loop.send(d.fd, bytes, udOf(w, .d_send, di));
+    } else {
+        const msg = d.out.prepare(&w.segs);
+        w.loop.sendmsg(d.fd, msg, udOf(w, .d_send, di));
+    }
     d.pending += 1;
 }
 
@@ -1348,11 +1411,18 @@ fn downSent(w: *Worker, di: u32, n: usize) void {
     if (!d.out.isEmpty()) {
         flushDown(w, di);
     } else if (d.close_after_flush and !d.lingering) {
-        beginLinger(w, di);
+        closeOrLinger(w, di);
     }
     if (was_full and d.out.bytes <= high_water) {
         if (d.up) |ui| upool.updateRecv(w, ui);
     }
+}
+
+fn closeOrLinger(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (d.linger_needed) return beginLinger(w, di);
+    if (d.tls) |t| if (d.tls_mode == .user or d.tls_mode == .ktls) Tls.shutdown(t);
+    closeDown(w, di);
 }
 
 /// Graceful close: send FIN, then wait briefly for the client's FIN so

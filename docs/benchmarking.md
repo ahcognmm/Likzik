@@ -15,17 +15,33 @@ The script runs keep-alive, new-connection, 1 MiB body and TCP passthrough
 workloads against likzik and against nginx configured as an equivalent
 reverse proxy (same upstream, upstream keepalive, `reuseport`, access log
 off, same worker count). It uses wrk2 when available, otherwise wrk.
+Extra likzik flags can be passed with `LIKZIK_ARGS` (e.g.
+`LIKZIK_ARGS=--pin-cpus`).
+
+Besides req/s and latency it reports, for the proxy processes only (not wrk,
+not the upstream):
+
+- **cpu**: average CPU cores used during the run (utime+stime of all threads).
+- **cpu/req**: CPU time per request in µs. This is the efficiency number;
+  on a shared host, req/s also depends on how the scheduler shares cores
+  between wrk, the upstream and the proxy.
+- **pss MB**: proportional set size after the run. Shared pages are split
+  between processes, so nginx's master and workers are counted fairly.
+- **peak memory** (last line): sum of VmHWM, which counts shared pages once
+  per process.
 
 Single-host numbers are only a smoke test: the load generator, both proxies
 and the upstream share CPUs. Example from the development VM (4 vCPUs,
 Linux 6.18, 2 workers each, 64 connections, wrk, `-Doptimize=fast`):
 
-| workload | likzik req/s | nginx req/s | likzik p99 | nginx p99 |
-| --- | ---: | ---: | ---: | ---: |
-| keep-alive | 90.5k | 78.1k | 2.72 ms | 3.46 ms |
-| new connection per request | 33.8k | 37.1k | 4.57 ms | 5.55 ms |
-| 1 MiB body | 2.67k | 2.08k | 51.7 ms | 78.1 ms |
-| TCP passthrough (likzik) | 110.3k | n/a | 4.09 ms | n/a |
+| workload | likzik req/s | nginx req/s | likzik cpu/req | nginx cpu/req | likzik p99 | nginx p99 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| keep-alive | 127–128k | 93–100k | 10.8–11.0 µs | 18.4–19.1 µs | 2.4–3.4 ms | 3.1–3.7 ms |
+| new connection per request | 40–44k | 35k | 21–23 µs | 36–37 µs | 3.7–3.9 ms | 5.9 ms+ |
+| 1 MiB body | 3.2–3.5k | 2.1–2.3k | 490–520 µs | 760–860 µs | 37–41 ms | 60–71 ms |
+
+likzik memory: about 10 MB PSS idle, 21 MB after the 1 MiB run (2 workers).
+nginx: about 16–17 MB.
 
 Parser: about 3.7 M requests/s per core (1.1 GB/s) on mixed realistic heads.
 

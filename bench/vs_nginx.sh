@@ -54,28 +54,53 @@ cat > "$WORK/likzik.json" <<JSON
   "clusters": [ { "name": "up", "max_idle_per_endpoint": 256, "endpoints": [ { "address": "127.0.0.1:29001" } ] } ] }
 JSON
 nginx -c "$WORK/up.conf" -p "$WORK"; nginx -c "$WORK/px.conf" -p "$WORK"
-"$LIKZIK" -c "$WORK/likzik.json" > "$WORK/likzik.log" 2>&1 & LPID=$!
+"$LIKZIK" -c "$WORK/likzik.json" ${LIKZIK_ARGS:-} > "$WORK/likzik.log" 2>&1 & LPID=$!
 sleep 1
 
 TOOL=wrk; command -v wrk2 >/dev/null && TOOL=wrk2
-run() { # name url extra-args...
-  local name=$1 url=$2; shift 2
-  local out; out=$($TOOL -t2 -c"$CONNS" -d"${DUR}s" --latency "$@" "$url" 2>&1)
-  local rps p50 p99 err
+HZ=$(getconf CLK_TCK)
+
+# Resource accounting from /proc, for the proxy processes only (not wrk,
+# not the upstream). CPU is utime+stime of every thread; memory is PSS
+# (proportional set size), which splits shared pages fairly between
+# nginx's master and workers instead of counting them once per process.
+pids_of() { # name
+  case $1 in
+    likzik) echo "$LPID" ;;
+    nginx)  local m; m=$(cat "$WORK/px.pid"); echo "$m $(pgrep -P "$m" | tr '\n' ' ')" ;;
+  esac
+}
+cpu_ticks() { local t=0 p; for p in $1; do t=$((t + $(awk '{print $14 + $15}' "/proc/$p/stat"))); done; echo $t; }
+pss_kb() { local t=0 p; for p in $1; do t=$((t + $(awk '/^Pss:/ {print $2}' "/proc/$p/smaps_rollup"))); done; echo $t; }
+peak_kb() { local t=0 p; for p in $1; do t=$((t + $(awk '/^VmHWM:/ {print $2}' "/proc/$p/status"))); done; echo $t; }
+
+run() { # proxy name url extra-args...
+  local proxy=$1 name=$2 url=$3; shift 3
+  local pids c0 c1 out rps p50 p99 err cores us_per_req pss
+  pids=$(pids_of "$proxy")
+  c0=$(cpu_ticks "$pids")
+  out=$($TOOL -t2 -c"$CONNS" -d"${DUR}s" --latency "$@" "$url" 2>&1)
+  c1=$(cpu_ticks "$pids")
+  pss=$(pss_kb "$pids")
   rps=$(echo "$out" | awk '/Requests\/sec/ {print $2}')
   p50=$(echo "$out" | awk '$1=="50%" {print $2}')
   p99=$(echo "$out" | awk '$1=="99%" {print $2}')
-  err=$(echo "$out" | grep -E "Non-2xx|Socket errors" | tr '\n' ' ')
-  printf "| %-28s | %12s | %9s | %9s | %s\n" "$name" "$rps" "$p50" "$p99" "${err:-}"
+  err=$(echo "$out" | grep -E "Non-2xx|Socket errors" | sed 's/^ *//' | tr '\n' ' ')
+  cores=$(awk -v t=$((c1 - c0)) -v hz="$HZ" -v d="$DUR" 'BEGIN {printf "%.2f", t / hz / d}')
+  us_per_req=$(awk -v t=$((c1 - c0)) -v hz="$HZ" -v d="$DUR" -v r="$rps" 'BEGIN {if (r > 0) printf "%.2f", (t / hz) * 1e6 / (r * d); else print "-"}')
+  printf "| %-28s | %10s | %9s | %9s | %5s | %7s | %7.1f | %s\n" "$name" "$rps" "$p50" "$p99" "$cores" "$us_per_req" "$(awk -v k="$pss" 'BEGIN {print k / 1024}')" "${err:-}"
 }
-echo "kernel $(uname -r), $(nproc) CPUs, $W workers each, $CONNS connections, ${DUR}s, tool: $TOOL"
-printf "| %-28s | %12s | %9s | %9s | %s\n" "workload" "req/s" "p50" "p99" "errors"
-for target in likzik:28080 nginx:28081; do
-  n=${target%%:*}; p=${target##*:}
-  run "$n keep-alive" "http://127.0.0.1:$p/"
-  run "$n new connection" "http://127.0.0.1:$p/" -H "Connection: close"
-  run "$n 1 MiB body" "http://127.0.0.1:$p/1m.bin"
+echo "kernel $(uname -r), $(nproc) CPUs ($(uname -m)), $W workers each, $CONNS connections, ${DUR}s, tool: $TOOL"
+echo "cpu = proxy CPU cores used on average; cpu/req = proxy CPU time per request; pss = proxy memory after the run"
+printf "| %-28s | %10s | %9s | %9s | %5s | %7s | %7s | %s\n" "workload" "req/s" "p50" "p99" "cpu" "cpu/req" "pss MB" "errors"
+printf "| %-28s | %10s | %9s | %9s | %5s | %7s | %7s | %s\n" "---" "---:" "---:" "---:" "---:" "---:" "---:" "---"
+for proxy in likzik:28080 nginx:28081; do
+  n=${proxy%%:*}; p=${proxy##*:}
+  run "$n" "$n keep-alive" "http://127.0.0.1:$p/"
+  run "$n" "$n new connection" "http://127.0.0.1:$p/" -H "Connection: close"
+  run "$n" "$n 1 MiB body" "http://127.0.0.1:$p/1m.bin"
 done
-run "likzik tcp passthrough" "http://127.0.0.1:28443/"
-[ -n "$STREAM_MOD" ] && run "nginx tcp passthrough" "http://127.0.0.1:28444/"
-run "upstream direct (baseline)" "http://127.0.0.1:29001/"
+run likzik "likzik tcp passthrough" "http://127.0.0.1:28443/"
+[ -n "$STREAM_MOD" ] && run nginx "nginx tcp passthrough" "http://127.0.0.1:28444/"
+echo
+echo "peak memory (sum of VmHWM, counts shared pages per process): likzik $(( $(peak_kb "$(pids_of likzik)") / 1024 )) MB, nginx $(( $(peak_kb "$(pids_of nginx)") / 1024 )) MB"
