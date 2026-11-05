@@ -1,0 +1,17 @@
+.{
+    .name = .likzik,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0x81c88e0488292035,
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "tests",
+        "bench",
+        "docs",
+        "config",
+        "README.md",
+    },
+}

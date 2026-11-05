@@ -1,0 +1,1075 @@
+//! HTTP/1.1 reverse proxy state machine (one per downstream connection).
+//!
+//! Data path:
+//!   * Downstream bytes arrive in provided buffers via a multishot recv.
+//!     When a request head lies entirely inside one buffer (the common
+//!     case) it is parsed in place. Otherwise bytes are accumulated in a
+//!     per-connection block and parsed there.
+//!   * The head is re-serialized into a fresh block and queued to the
+//!     upstream. Body bytes are forwarded zero-copy: the send queue holds a
+//!     reference on the provided buffer until the send completes.
+//!   * The response takes the mirror path back.
+//!
+//! Requests on one connection are handled strictly in order, one at a
+//! time; pipelined bytes wait in the accumulation block.
+//!
+//! Backpressure: when the peer's send queue passes `high_water`, the
+//! source's multishot recv is cancelled, and re-armed when it drains.
+
+const std = @import("std");
+const linux = std.os.linux;
+
+const worker_mod = @import("../runtime/worker.zig");
+const Worker = worker_mod.Worker;
+const Op = @import("../runtime/loop.zig").Op;
+const tw = @import("../runtime/timer_wheel.zig");
+const sq = @import("../runtime/send_queue.zig");
+const blocks_mod = @import("../mem/blocks.zig");
+const InBuf = blocks_mod.InBuf;
+const parser = @import("../http1/parser.zig");
+const rules = @import("../http1/smuggling_rules.zig");
+const codec = @import("../http1/codec.zig");
+const chunked = @import("../http1/chunked.zig");
+const snapshot = @import("../config/snapshot.zig");
+const socket = @import("../net/socket.zig");
+const upool = @import("../upstream/pool.zig");
+const lb = @import("../upstream/lb.zig");
+
+const log = std.log.scoped(.http);
+
+/// Send-queue size at which the source side stops reading.
+pub const high_water = 128 * 1024;
+/// Pipelined bytes buffered before downstream reads pause.
+const pipeline_cap = 8 * 1024;
+const linger_ms = 2_000;
+
+pub const Body = struct {
+    kind: Kind = .none,
+    remaining: u64 = 0,
+    dec: chunked.Decoder = .{},
+    done: bool = true,
+
+    pub const Kind = enum { none, length, chunked, close };
+
+    fn init(f: rules.Framing) Body {
+        return switch (f) {
+            .none => .{},
+            .length => |n| .{ .kind = .length, .remaining = n, .done = false },
+            .chunked => .{ .kind = .chunked, .done = false },
+            .close_delimited => .{ .kind = .close, .done = false },
+        };
+    }
+};
+
+pub const Phase = enum { head, exchange, closing };
+
+pub const Down = struct {
+    fd: linux.fd_t,
+    listener: u16,
+    ip_buf: [64]u8 = undefined,
+    ip_len: u8 = 0,
+    phase: Phase = .head,
+    in: InBuf = .{},
+    scanner: parser.HeadScanner = .{},
+    out: sq.SendQueue = .{},
+    timer: tw.Timer = .{},
+    pending: u16 = 0,
+    recv_armed: bool = false,
+    recv_cancelling: bool = false,
+    pumping: bool = false,
+    close_after_flush: bool = false,
+    lingering: bool = false,
+    peer_eof: bool = false,
+    requests: u32 = 0,
+
+    // Current exchange.
+    snap: ?*snapshot.Snapshot = null,
+    cluster: ?*const snapshot.Cluster = null,
+    ep_id: ?u32 = null,
+    up: ?u32 = null,
+    attempts: u8 = 0,
+    /// Serialized upstream request head, kept until the response starts so
+    /// a request can be retried on another connection.
+    head_block: ?u32 = null,
+    head_len: u32 = 0,
+    method: parser.Method = .GET,
+    client10: bool = false,
+    keep_alive: bool = true,
+    retryable: bool = false,
+    /// Request body bytes were handed to an upstream connection.
+    body_sent: bool = false,
+    /// A replay on a fresh connection already happened.
+    replayed: bool = false,
+    timeout_ms: u32 = 0,
+    req: Body = .{},
+    resp_head_done: bool = false,
+    /// Any response bytes (including 1xx) were queued to the client.
+    resp_started: bool = false,
+    resp_bytes_seen: bool = false,
+    resp: Body = .{},
+    resp_dechunk: bool = false,
+    resp_keep_alive: bool = false,
+    up_poisoned: bool = false,
+
+    fn ip(self: *const Down) []const u8 {
+        return self.ip_buf[0..self.ip_len];
+    }
+};
+
+inline fn get(w: *Worker, di: u32) *Down {
+    return w.downs.get(di);
+}
+
+inline fn udOf(w: *Worker, op: Op, di: u32) u64 {
+    return Worker.ud(op, di, w.downs.gen(di));
+}
+
+fn gen(w: *Worker, di: u32) u32 {
+    return w.downs.gen(di);
+}
+
+// ---------------------------------------------------------------- accept
+
+pub fn accept(w: *Worker, fd: linux.fd_t, slot: u16) void {
+    const di = w.downs.alloc() orelse {
+        w.stats.inc(.downstream_cx_overflow);
+        socket.closeFd(fd);
+        return;
+    };
+    const d = get(w, di);
+    d.* = .{ .fd = fd, .listener = slot };
+    socket.setInt(fd, linux.IPPROTO.TCP, linux.TCP.NODELAY, 1) catch {};
+    const peer = socket.peerAddress(fd);
+    d.ip_len = @intCast(peer.formatIp(&d.ip_buf).len);
+    w.listeners[slot].conns += 1;
+    w.stats.inc(.downstream_cx_total);
+    w.stats.inc(.downstream_cx_active);
+    w.schedule(&d.timer, .down, di, gen(w, di), w.cur.limits.header_timeout_ms);
+    updateDownRecv(w, di);
+}
+
+// ---------------------------------------------------------------- recv
+
+/// True when the downstream's outgoing queue is too full to accept more
+/// response bytes (the upstream should stop reading).
+pub fn downBackpressured(w: *Worker, di: u32) bool {
+    return get(w, di).out.bytes > high_water;
+}
+
+fn wantDownRecv(w: *Worker, d: *Down) bool {
+    if (d.phase == .closing) return false;
+    if (d.lingering) return true;
+    if (d.close_after_flush) return false;
+    if (d.phase == .exchange) {
+        if (d.up) |ui| {
+            if (upool.get(w, ui).out.bytes > high_water) return false;
+        }
+        if (d.req.done and d.in.len() >= pipeline_cap) return false;
+    }
+    return true;
+}
+
+pub fn updateDownRecv(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    const want = wantDownRecv(w, d);
+    if (want and !d.recv_armed) {
+        w.loop.recvMultishot(d.fd, worker_mod.buffer_group, udOf(w, .d_recv, di));
+        d.recv_armed = true;
+        d.recv_cancelling = false;
+        d.pending += 1;
+    } else if (!want and d.recv_armed and !d.recv_cancelling and d.phase != .closing) {
+        w.loop.cancelUd(udOf(w, .d_recv, di));
+        d.recv_cancelling = true;
+    }
+}
+
+pub fn onDownRecv(w: *Worker, di: u32, cqe: *const linux.io_uring_cqe) void {
+    const d = get(w, di);
+    const more = cqe.flags & linux.IORING_CQE_F_MORE != 0;
+    if (!more) {
+        d.recv_armed = false;
+        d.recv_cancelling = false;
+        d.pending -= 1;
+    }
+    defer if (d.phase == .closing and d.pending == 0) w.reapLater(.down, di, gen(w, di));
+
+    if (cqe.res < 0) {
+        switch (@as(linux.E, @enumFromInt(-cqe.res))) {
+            .NOBUFS => {
+                w.stats.inc(.buffer_ring_enobufs);
+                w.needRearm(.down, di, gen(w, di));
+            },
+            .CANCELED => if (d.phase != .closing) updateDownRecv(w, di),
+            else => closeDown(w, di),
+        }
+        return;
+    }
+    if (cqe.res == 0) {
+        onDownEof(w, di);
+        return;
+    }
+    const data = w.bufs.take(cqe) catch {
+        closeDown(w, di);
+        return;
+    };
+    const bid = w.bufs.idOf(cqe);
+    w.stats.add(.bytes_received, data.len);
+    if (d.phase != .closing and !d.lingering) handleDownData(w, di, bid, data);
+    w.bufs.unref(bid);
+    if (!more and d.phase != .closing) updateDownRecv(w, di);
+}
+
+fn onDownEof(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    d.peer_eof = true;
+    if (d.lingering or d.phase == .head) {
+        closeDown(w, di);
+        return;
+    }
+    if (d.phase == .exchange) {
+        if (!d.req.done) {
+            // Client went away mid-request.
+            closeDown(w, di);
+            return;
+        }
+        // Client half-closed after sending complete request(s): answer
+        // everything it already sent, then close (endExchange decides).
+    }
+}
+
+fn handleDownData(w: *Worker, di: u32, bid: u16, data: []const u8) void {
+    const d = get(w, di);
+    const limits = &w.cur.limits;
+    var rest = data;
+    while (rest.len > 0) {
+        switch (d.phase) {
+            .closing => return,
+            .head => {
+                if (d.close_after_flush) return;
+                if (d.in.isEmpty()) {
+                    if (d.scanner.feed(rest)) |r| {
+                        if (r.end > limits.max_head_bytes) return localError(w, di, 431, true);
+                        d.scanner.reset();
+                        startRequest(w, di, rest[r.start..r.end]);
+                        rest = rest[r.end..];
+                        continue;
+                    }
+                    if (rest.len > limits.max_head_bytes) return localError(w, di, 431, true);
+                    // Partial head: continue in the accumulation block.
+                    // The scanner's offsets stay valid: the block starts
+                    // with exactly these bytes.
+                    d.in.append(&w.blocks, rest) catch return outOfBlocks(w, di);
+                    return;
+                }
+                d.in.append(&w.blocks, rest) catch |e| switch (e) {
+                    error.NoSpace => return localError(w, di, 431, true),
+                    error.OutOfBlocks => return outOfBlocks(w, di),
+                };
+                pumpIn(w, di);
+                return;
+            },
+            .exchange => {
+                if (!d.req.done) {
+                    const n = forwardReqBody(w, di, rest, .{ .pbuf = bid }) orelse return;
+                    rest = rest[n..];
+                    continue;
+                }
+                // Pipelined request: hold it until this exchange ends.
+                d.in.append(&w.blocks, rest) catch return closeDown(w, di);
+                return;
+            },
+        }
+    }
+}
+
+fn outOfBlocks(w: *Worker, di: u32) void {
+    w.stats.inc(.blocks_exhausted);
+    localError(w, di, 503, true);
+}
+
+/// Parses and starts requests from the accumulation block.
+fn pumpIn(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (d.pumping) return;
+    d.pumping = true;
+    defer d.pumping = false;
+    const limits = &w.cur.limits;
+    while (d.phase == .head and !d.close_after_flush and !d.in.isEmpty()) {
+        const buf = d.in.slice(&w.blocks);
+        const r = d.scanner.feed(buf) orelse {
+            if (buf.len > limits.max_head_bytes) localError(w, di, 431, true);
+            break;
+        };
+        if (r.end > limits.max_head_bytes) {
+            localError(w, di, 431, true);
+            break;
+        }
+        d.scanner.reset();
+        // startRequest copies everything it needs out of `buf`.
+        startRequest(w, di, buf[r.start..r.end]);
+        if (d.phase == .closing) return;
+        d.in.consume(r.end);
+        if (d.phase == .exchange and !d.req.done and !d.in.isEmpty()) {
+            const blk = d.in.block.?;
+            const n = forwardReqBody(w, di, d.in.slice(&w.blocks), .{ .block = blk }) orelse return;
+            d.in.consume(n);
+        }
+    }
+    if (d.phase != .closing) d.in.trim(&w.blocks);
+}
+
+// ---------------------------------------------------------------- requests
+
+fn startRequest(w: *Worker, di: u32, head: []const u8) void {
+    const d = get(w, di);
+    w.stats.inc(.downstream_rq_total);
+    w.wheel.cancel(&d.timer);
+
+    var hs: [parser.max_headers]parser.Header = undefined;
+    const req = parser.parseRequest(head, &hs) catch |e| {
+        w.stats.inc(.downstream_rq_bad_request);
+        return localError(w, di, parser.statusFor(e), true);
+    };
+    const info = rules.analyzeRequest(&req) catch |e| {
+        w.stats.inc(.downstream_rq_bad_request);
+        return localError(w, di, parser.statusFor(e), true);
+    };
+    const limits = &w.cur.limits;
+    d.method = req.method;
+    d.client10 = req.version == .http10;
+    d.keep_alive = info.keep_alive and !w.draining and d.requests + 1 < limits.max_requests_per_connection;
+    d.req = Body.init(info.framing);
+    d.phase = .exchange;
+    d.resp_head_done = false;
+    d.resp_started = false;
+    d.resp_bytes_seen = false;
+    d.up_poisoned = false;
+    d.attempts = 0;
+    d.ep_id = null;
+    d.body_sent = false;
+    d.replayed = false;
+
+    const lcfg = w.listenerCfg(d.listener) orelse return localError(w, di, 503, true);
+    const route = lcfg.routes.?.select(info.host, req.target, req.method) orelse {
+        w.stats.inc(.downstream_rq_no_route);
+        return localError(w, di, 404, info.framing != .none);
+    };
+    d.snap = w.pinCurrent() orelse return localError(w, di, 503, true);
+    d.cluster = route.cluster;
+    d.timeout_ms = route.timeout_ms;
+    d.retryable = req.method.idempotent() and info.framing == .none;
+
+    // Path rewrite.
+    var target_buf: [8192]u8 = undefined;
+    var target: ?[]const u8 = null;
+    if (route.prefix_rewrite) |pr| {
+        const tail = req.target[route.path.len..];
+        if (pr.len + tail.len > target_buf.len) return localError(w, di, 414, true);
+        @memcpy(target_buf[0..pr.len], pr);
+        // Avoid "//" when both the rewrite ends and the tail starts with '/'.
+        const skip: usize = if (pr.len > 0 and pr[pr.len - 1] == '/' and tail.len > 0 and tail[0] == '/') 1 else 0;
+        @memcpy(target_buf[pr.len .. pr.len + tail.len - skip], tail[skip..]);
+        target = target_buf[0 .. pr.len + tail.len - skip];
+    }
+
+    const blk = w.blocks.alloc() orelse return outOfBlocks(w, di);
+    var out: codec.Out = .{ .buf = w.blocks.bytes(blk) };
+    codec.writeRequest(&out, &req, &info, .{
+        .client_ip = d.ip(),
+        .proto = "http",
+        .trusted_client = lcfg.trust_forwarded_headers,
+        .target = target,
+    }) catch {
+        w.blocks.unref(blk);
+        return localError(w, di, 431, true);
+    };
+    d.head_block = blk;
+    d.head_len = @intCast(out.len);
+    w.schedule(&d.timer, .down, di, gen(w, di), d.timeout_ms);
+    startUpstream(w, di, null);
+}
+
+/// Picks an endpoint and binds an upstream connection to the exchange.
+fn startUpstream(w: *Worker, di: u32, exclude_first: ?u32) void {
+    const d = get(w, di);
+    const c = d.cluster.?;
+    var exclude = exclude_first;
+    var ctx: lb.Ctx = .{ .gpa = w.gpa, .eps = &w.eps, .rng = w.prng.random(), .now_ms = w.now_ms };
+    while (d.attempts < c.max_connect_attempts) {
+        const ep = (lb.pick(&ctx, c, exclude) catch null) orelse break;
+        d.attempts += 1;
+        if (d.attempts > 1) w.stats.inc(.upstream_rq_retry);
+        const ui = upool.acquire(w, ep, c) catch {
+            recordConnectFailure(w, ep.id, c);
+            exclude = ep.id;
+            continue;
+        };
+        const st = w.eps.get(w.gpa, ep.id) catch unreachable;
+        st.active += 1;
+        d.ep_id = ep.id;
+        d.up = ui;
+        const u = upool.get(w, ui);
+        u.owner = di;
+        u.owner_gen = gen(w, di);
+        w.blocks.ref(d.head_block.?);
+        u.out.push(&w.segs, .{ .ptr = w.blocks.bytes(d.head_block.?), .len = d.head_len, .owner = .{ .block = d.head_block.? } }) catch {
+            w.blocks.unref(d.head_block.?);
+            return localError(w, di, 503, true);
+        };
+        w.stats.inc(.upstream_rq_total);
+        if (u.state == .busy) {
+            upool.flush(w, ui);
+            upool.updateRecv(w, ui);
+        }
+        return;
+    }
+    localError(w, di, 503, true);
+}
+
+fn recordConnectFailure(w: *Worker, ep_id: u32, c: *const snapshot.Cluster) void {
+    w.stats.inc(.upstream_cx_connect_fail);
+    const st = w.eps.get(w.gpa, ep_id) catch return;
+    if (st.recordFailure(w.now_ms, c.eject_after_failures, c.eject_ms)) w.stats.inc(.endpoint_ejections);
+}
+
+/// Forwards request body bytes to the upstream. Returns bytes consumed,
+/// or null when the connection was closed because of an error.
+fn forwardReqBody(w: *Worker, di: u32, data: []const u8, owner: sq.Owner) ?usize {
+    const d = get(w, di);
+    const n: usize = switch (d.req.kind) {
+        .none, .close => 0,
+        .length => blk: {
+            const n: usize = @intCast(@min(d.req.remaining, data.len));
+            d.req.remaining -= n;
+            if (d.req.remaining == 0) d.req.done = true;
+            break :blk n;
+        },
+        .chunked => blk: {
+            var off: usize = 0;
+            while (off < data.len) {
+                const s = d.req.dec.step(data[off..]) catch {
+                    w.stats.inc(.downstream_rq_bad_request);
+                    localError(w, di, 400, true);
+                    return null;
+                };
+                off += s.consumed;
+                if (s.done) {
+                    d.req.done = true;
+                    break;
+                }
+            }
+            break :blk off;
+        },
+    };
+    if (n > 0) {
+        d.body_sent = true;
+        w.schedule(&d.timer, .down, di, gen(w, di), d.timeout_ms);
+        if (d.up) |ui| {
+            const u = upool.get(w, ui);
+            const held = holdForQueue(w, data[0..n], owner) orelse {
+                closeDown(w, di);
+                return null;
+            };
+            u.out.push(&w.segs, .{ .ptr = held.bytes.ptr, .len = @intCast(n), .owner = held.owner }) catch {
+                w.releaseOwner(held.owner);
+                closeDown(w, di);
+                return null;
+            };
+            upool.flush(w, ui);
+        }
+    }
+    updateDownRecv(w, di);
+    return n;
+}
+
+fn holdOwner(w: *Worker, o: sq.Owner) void {
+    switch (o) {
+        .none => {},
+        .pbuf => |id| w.bufs.ref(id),
+        .block => |id| w.blocks.ref(id),
+    }
+}
+
+/// Takes a reference for a send-queue segment covering `bytes`. When the
+/// provided-buffer ring is running low, the bytes are copied into a block
+/// instead, so a slow peer cannot pin the shared ring and starve every
+/// other connection on this worker. Returns the (possibly new) owner and
+/// slice, or null when out of memory.
+fn holdForQueue(w: *Worker, bytes: []const u8, o: sq.Owner) ?struct { owner: sq.Owner, bytes: []const u8 } {
+    if (o == .pbuf and w.bufs.out * 4 > @as(u32, w.bufs.count) * 3) {
+        var copied: ?sq.Owner = null;
+        if (bytes.len <= blocks_mod.block_size) {
+            if (w.blocks.alloc()) |blk| {
+                const dst = w.blocks.bytes(blk)[0..bytes.len];
+                @memcpy(dst, bytes);
+                w.stats.inc(.buffer_ring_copies);
+                copied = .{ .block = blk };
+                return .{ .owner = copied.?, .bytes = dst };
+            }
+        }
+    }
+    holdOwner(w, o);
+    return .{ .owner = o, .bytes = bytes };
+}
+
+// ---------------------------------------------------------------- responses
+
+fn ownerOf(w: *Worker, ui: u32) ?u32 {
+    const u = upool.get(w, ui);
+    const di = u.owner orelse return null;
+    if (!w.downs.valid(di, u.owner_gen)) return null;
+    const d = get(w, di);
+    if (d.up == null or d.up.? != ui) return null;
+    return di;
+}
+
+pub fn onUpConnect(w: *Worker, ui: u32, cqe: *const linux.io_uring_cqe) void {
+    const u = upool.get(w, ui);
+    u.pending -= 1;
+    defer if (u.state == .closing and u.pending == 0) w.reapLater(.up, ui, w.ups.gen(ui));
+    if (u.state == .closing) return;
+    const di = ownerOf(w, ui);
+    if (cqe.res == 0) {
+        u.state = .busy;
+        if (w.eps.get(w.gpa, u.ep_id)) |st| st.recordSuccess() else |_| {}
+        if (di == null) {
+            // Downstream went away while connecting: keep the connection.
+            upool.release(w, ui);
+            return;
+        }
+        upool.flush(w, ui);
+        upool.updateRecv(w, ui);
+        return;
+    }
+    const timed_out = cqe.res == -@as(i32, @intFromEnum(linux.E.CANCELED));
+    if (timed_out) w.stats.inc(.upstream_cx_connect_timeout);
+    const ep_id = u.ep_id;
+    upool.close(w, ui);
+    const d_i = di orelse return;
+    const d = get(w, d_i);
+    if (d.cluster) |c| recordConnectFailure(w, ep_id, c);
+    detachUp(w, d_i, false);
+    // Nothing reached the upstream, so a connect failure is safe to retry
+    // unless request body bytes were already consumed from the client.
+    if (d.attempts < d.cluster.?.max_connect_attempts and !d.body_sent) {
+        startUpstream(w, d_i, ep_id);
+    } else {
+        localError(w, d_i, if (timed_out) 504 else 503, !d.req.done);
+    }
+}
+
+pub fn onUpSend(w: *Worker, ui: u32, cqe: *const linux.io_uring_cqe) void {
+    const u = upool.get(w, ui);
+    u.pending -= 1;
+    defer if (u.state == .closing and u.pending == 0) w.reapLater(.up, ui, w.ups.gen(ui));
+    if (cqe.res < 0) {
+        u.out.inflight = false;
+        const di = ownerOf(w, ui);
+        upool.close(w, ui);
+        if (di) |d_i| upstreamFailed(w, d_i);
+        return;
+    }
+    u.out.complete(&w.segs, @intCast(cqe.res), w);
+    if (u.state == .closing) return;
+    upool.flush(w, ui);
+    if (ownerOf(w, ui)) |di| updateDownRecv(w, di);
+}
+
+pub fn onUpRecv(w: *Worker, ui: u32, cqe: *const linux.io_uring_cqe) void {
+    const u = upool.get(w, ui);
+    const more = cqe.flags & linux.IORING_CQE_F_MORE != 0;
+    if (!more) {
+        u.recv_armed = false;
+        u.recv_cancelling = false;
+        u.pending -= 1;
+    }
+    defer if (u.state == .closing and u.pending == 0) w.reapLater(.up, ui, w.ups.gen(ui));
+
+    if (cqe.res < 0) {
+        switch (@as(linux.E, @enumFromInt(-cqe.res))) {
+            .NOBUFS => {
+                w.stats.inc(.buffer_ring_enobufs);
+                w.needRearm(.up, ui, w.ups.gen(ui));
+            },
+            .CANCELED => if (u.state != .closing) upool.updateRecv(w, ui),
+            else => {
+                const di = ownerOf(w, ui);
+                upool.close(w, ui);
+                if (di) |d_i| upstreamFailed(w, d_i);
+            },
+        }
+        return;
+    }
+    if (cqe.res == 0) {
+        onUpEof(w, ui);
+        return;
+    }
+    const data = w.bufs.take(cqe) catch {
+        upool.close(w, ui);
+        return;
+    };
+    const bid = w.bufs.idOf(cqe);
+    defer w.bufs.unref(bid);
+    if (u.state == .closing) return;
+    const di = ownerOf(w, ui) orelse {
+        // Bytes on an idle connection: the upstream is broken.
+        w.stats.inc(.upstream_cx_protocol_error);
+        upool.close(w, ui);
+        return;
+    };
+    handleUpData(w, di, ui, bid, data);
+    if (!more and u.state != .closing) upool.updateRecv(w, ui);
+}
+
+fn handleUpData(w: *Worker, di: u32, ui: u32, bid: u16, data: []const u8) void {
+    const d = get(w, di);
+    const u = upool.get(w, ui);
+    d.resp_bytes_seen = true;
+    // Activity: push the response deadline out.
+    w.schedule(&d.timer, .down, di, gen(w, di), d.timeout_ms);
+    var rest = data;
+    while (rest.len > 0) {
+        if (d.phase != .exchange or d.up == null or d.up.? != ui) return;
+        if (!d.resp_head_done) {
+            if (u.in.isEmpty()) {
+                if (u.scanner.feed(rest)) |r| {
+                    u.scanner.reset();
+                    if (!onRespHead(w, di, ui, rest[r.start..r.end])) return;
+                    rest = rest[r.end..];
+                    continue;
+                }
+                u.in.append(&w.blocks, rest) catch return respProtocolError(w, di, ui);
+                return;
+            }
+            u.in.append(&w.blocks, rest) catch return respProtocolError(w, di, ui);
+            rest = &.{};
+            // Parse heads (possibly several 1xx) out of the block.
+            while (!d.resp_head_done and !u.in.isEmpty()) {
+                const buf = u.in.slice(&w.blocks);
+                const r = u.scanner.feed(buf) orelse return;
+                u.scanner.reset();
+                if (!onRespHead(w, di, ui, buf[r.start..r.end])) return;
+                u.in.consume(r.end);
+            }
+            if (d.resp_head_done and !d.resp.done and !u.in.isEmpty()) {
+                const blk = u.in.block.?;
+                const n = forwardRespBody(w, di, u.in.slice(&w.blocks), .{ .block = blk }) orelse return;
+                u.in.consume(n);
+            }
+            if (!u.in.isEmpty() and d.resp_head_done and d.resp.done) d.up_poisoned = true;
+            u.in.trim(&w.blocks);
+            break;
+        }
+        if (d.resp.done) {
+            // Bytes after a complete response: the connection is unusable.
+            d.up_poisoned = true;
+            break;
+        }
+        const n = forwardRespBody(w, di, rest, .{ .pbuf = bid }) orelse return;
+        rest = rest[n..];
+    }
+    if (d.phase == .exchange and d.up != null and d.up.? == ui and d.resp_head_done and d.resp.done) {
+        finishResponse(w, di);
+    }
+}
+
+fn respProtocolError(w: *Worker, di: u32, ui: u32) void {
+    w.stats.inc(.upstream_cx_protocol_error);
+    _ = ui;
+    upstreamFailed(w, di);
+}
+
+/// Returns false when the exchange was aborted.
+fn onRespHead(w: *Worker, di: u32, ui: u32, head: []const u8) bool {
+    const d = get(w, di);
+    var hs: [parser.max_headers]parser.Header = undefined;
+    const resp = parser.parseResponse(head, &hs) catch {
+        respProtocolError(w, di, ui);
+        return false;
+    };
+    if (resp.status < 200) {
+        if (resp.status == 101) {
+            respProtocolError(w, di, ui);
+            return false;
+        }
+        // Interim response: forward to HTTP/1.1 clients, keep reading.
+        if (!d.client10) {
+            const blk = w.blocks.alloc() orelse {
+                outOfBlocks(w, di);
+                return false;
+            };
+            var out: codec.Out = .{ .buf = w.blocks.bytes(blk) };
+            const info = rules.analyzeResponse(&resp, d.method) catch {
+                w.blocks.unref(blk);
+                respProtocolError(w, di, ui);
+                return false;
+            };
+            codec.writeResponse(&out, &resp, &info, .{ .keep_alive = true, .client_http10 = false, .dechunk = false }) catch {
+                w.blocks.unref(blk);
+                respProtocolError(w, di, ui);
+                return false;
+            };
+            // writeResponse never adds framing for 1xx (framing none).
+            queueDown(w, di, w.blocks.bytes(blk)[0..out.len], .{ .block = blk });
+            d.resp_started = true;
+        }
+        return true;
+    }
+    const info = rules.analyzeResponse(&resp, d.method) catch {
+        respProtocolError(w, di, ui);
+        return false;
+    };
+    d.resp_keep_alive = info.keep_alive;
+    d.resp_dechunk = info.framing == .chunked and d.client10;
+    if (info.framing == .close_delimited or d.resp_dechunk) d.keep_alive = false;
+    if (w.draining) d.keep_alive = false;
+    const blk = w.blocks.alloc() orelse {
+        outOfBlocks(w, di);
+        return false;
+    };
+    var out: codec.Out = .{ .buf = w.blocks.bytes(blk) };
+    codec.writeResponse(&out, &resp, &info, .{ .keep_alive = d.keep_alive, .client_http10 = d.client10, .dechunk = d.resp_dechunk }) catch {
+        w.blocks.unref(blk);
+        respProtocolError(w, di, ui);
+        return false;
+    };
+    // The response has started: the request can no longer be retried.
+    if (d.head_block) |hb| {
+        w.blocks.unref(hb);
+        d.head_block = null;
+    }
+    queueDown(w, di, w.blocks.bytes(blk)[0..out.len], .{ .block = blk });
+    d.resp_started = true;
+    d.resp_head_done = true;
+    d.resp = Body.init(info.framing);
+    countStatus(w, resp.status);
+    if (resp.status >= 500) w.stats.inc(.upstream_rq_5xx);
+    return d.phase == .exchange;
+}
+
+fn countStatus(w: *Worker, status: u16) void {
+    w.stats.inc(switch (status / 100) {
+        1 => .downstream_rq_1xx,
+        2 => .downstream_rq_2xx,
+        3 => .downstream_rq_3xx,
+        4 => .downstream_rq_4xx,
+        else => .downstream_rq_5xx,
+    });
+}
+
+/// Forwards response body bytes. Returns bytes consumed, or null when the
+/// exchange was aborted.
+fn forwardRespBody(w: *Worker, di: u32, data: []const u8, owner: sq.Owner) ?usize {
+    const d = get(w, di);
+    switch (d.resp.kind) {
+        .none => return 0,
+        .length => {
+            const n: usize = @intCast(@min(d.resp.remaining, data.len));
+            d.resp.remaining -= n;
+            if (d.resp.remaining == 0) d.resp.done = true;
+            if (n > 0) queueDownHeld(w, di, data[0..n], owner);
+            return n;
+        },
+        .close => {
+            queueDownHeld(w, di, data, owner);
+            return data.len;
+        },
+        .chunked => {
+            var off: usize = 0;
+            while (off < data.len) {
+                const s = d.resp.dec.step(data[off..]) catch {
+                    w.stats.inc(.upstream_cx_protocol_error);
+                    closeDown(w, di);
+                    return null;
+                };
+                if (d.resp_dechunk and s.data_len > 0) {
+                    queueDownHeld(w, di, data[off + s.data_off ..][0..s.data_len], owner);
+                }
+                off += s.consumed;
+                if (s.done) {
+                    d.resp.done = true;
+                    break;
+                }
+            }
+            if (!d.resp_dechunk and off > 0) queueDownHeld(w, di, data[0..off], owner);
+            return off;
+        },
+    }
+}
+
+fn queueDownHeld(w: *Worker, di: u32, bytes: []const u8, owner: sq.Owner) void {
+    const held = holdForQueue(w, bytes, owner) orelse return closeDown(w, di);
+    queueDown(w, di, held.bytes, held.owner);
+}
+
+/// Queues bytes to the client; takes over one reference on `owner`.
+fn queueDown(w: *Worker, di: u32, bytes: []const u8, owner: sq.Owner) void {
+    const d = get(w, di);
+    if (bytes.len == 0) {
+        w.releaseOwner(owner);
+        return;
+    }
+    d.out.push(&w.segs, .{ .ptr = bytes.ptr, .len = @intCast(bytes.len), .owner = owner }) catch {
+        w.releaseOwner(owner);
+        closeDown(w, di);
+        return;
+    };
+    flushDown(w, di);
+    if (d.up) |ui| if (d.out.bytes > high_water) upool.updateRecv(w, ui);
+}
+
+fn onUpEof(w: *Worker, ui: u32) void {
+    const u = upool.get(w, ui);
+    const di = ownerOf(w, ui);
+    if (di) |d_i| {
+        const d = get(w, d_i);
+        if (d.resp_head_done and d.resp.kind == .close) {
+            d.resp.done = true;
+            d.up_poisoned = true;
+            finishResponse(w, d_i);
+        } else {
+            upool.close(w, ui);
+            upstreamFailed(w, d_i);
+            return;
+        }
+    }
+    if (u.state != .closing) upool.close(w, ui);
+}
+
+/// The upstream connection broke before the exchange completed.
+fn upstreamFailed(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (d.phase != .exchange) return;
+    const reused = if (d.up) |ui| upool.get(w, ui).reused else false;
+    detachUp(w, di, true);
+    if (d.resp_started) {
+        // Mid-response: all we can do is close the client connection.
+        closeDown(w, di);
+        return;
+    }
+    // A pooled connection the upstream closed concurrently: retry once on
+    // a fresh connection when the request is safe to replay.
+    if (reused and d.retryable and !d.replayed and !d.resp_bytes_seen and d.head_block != null) {
+        d.replayed = true;
+        d.attempts -|= 1;
+        startUpstream(w, di, null);
+        return;
+    }
+    localError(w, di, 502, true);
+}
+
+fn detachUp(w: *Worker, di: u32, close_it: bool) void {
+    const d = get(w, di);
+    if (d.up) |ui| {
+        const u = upool.get(w, ui);
+        if (u.owner == di) u.owner = null;
+        if (close_it) upool.close(w, ui);
+        d.up = null;
+    }
+    if (d.ep_id) |id| {
+        const st = w.eps.get(w.gpa, id) catch unreachable;
+        st.active -|= 1;
+        d.ep_id = null;
+    }
+}
+
+fn finishResponse(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (d.up) |ui| {
+        const u = upool.get(w, ui);
+        const reusable = d.resp_keep_alive and d.req.done and !d.up_poisoned and u.in.isEmpty() and u.state == .busy;
+        detachUp(w, di, false);
+        if (reusable) upool.release(w, ui) else upool.close(w, ui);
+    } else detachUp(w, di, false);
+    if (!d.req.done) d.keep_alive = false;
+    endExchange(w, di);
+}
+
+fn endExchange(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (d.snap) |s| {
+        w.unpin(s);
+        d.snap = null;
+    }
+    if (d.head_block) |hb| {
+        w.blocks.unref(hb);
+        d.head_block = null;
+    }
+    d.requests += 1;
+    d.cluster = null;
+    d.resp_head_done = false;
+    d.resp = .{};
+    d.req = .{};
+    if (d.phase == .closing) return;
+    // After a client FIN, only requests already buffered are served.
+    var probe = d.scanner; // a copy: probing must not advance the real scanner
+    const nothing_more = d.peer_eof and (d.in.isEmpty() or probe.feed(d.in.slice(&w.blocks)) == null);
+    if (!d.keep_alive or w.draining or nothing_more) {
+        d.phase = .head;
+        d.close_after_flush = true;
+        w.wheel.cancel(&d.timer);
+        if (d.out.isEmpty() and !d.out.inflight) beginLinger(w, di) else updateDownRecv(w, di);
+        return;
+    }
+    d.phase = .head;
+    w.schedule(&d.timer, .down, di, gen(w, di), if (d.in.isEmpty()) w.cur.limits.idle_timeout_ms else w.cur.limits.header_timeout_ms);
+    updateDownRecv(w, di);
+    pumpIn(w, di);
+}
+
+/// Sends a locally generated response. `close` forces the connection to
+/// close after it (always the case when request body bytes are unread).
+fn localError(w: *Worker, di: u32, status: u16, close: bool) void {
+    const d = get(w, di);
+    if (d.phase == .closing) return;
+    if (d.resp_started) {
+        closeDown(w, di);
+        return;
+    }
+    detachUp(w, di, true);
+    if (d.phase == .exchange and !d.req.done) d.keep_alive = false;
+    if (close) d.keep_alive = false;
+    if (w.draining) d.keep_alive = false;
+    if (d.phase == .head) d.phase = .exchange; // local response counts as an exchange
+    const blk = w.blocks.alloc() orelse {
+        closeDown(w, di);
+        return;
+    };
+    var out: codec.Out = .{ .buf = w.blocks.bytes(blk) };
+    var body_buf: [64]u8 = undefined;
+    const body = std.fmt.bufPrint(&body_buf, "{d} {s}\n", .{ status, codec.reasonPhrase(status) }) catch "";
+    codec.writeLocal(&out, status, d.keep_alive, body) catch unreachable;
+    countStatus(w, status);
+    if (status == 408 or status == 504) w.stats.inc(.downstream_rq_timeout);
+    d.resp_started = true;
+    queueDown(w, di, w.blocks.bytes(blk)[0..out.len], .{ .block = blk });
+    if (d.phase == .closing) return;
+    endExchange(w, di);
+}
+
+// ---------------------------------------------------------------- send
+
+fn flushDown(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (d.phase == .closing or d.out.inflight or d.out.isEmpty()) return;
+    const msg = d.out.prepare(&w.segs);
+    w.loop.sendmsg(d.fd, msg, udOf(w, .d_send, di));
+    d.pending += 1;
+}
+
+pub fn onDownSend(w: *Worker, di: u32, cqe: *const linux.io_uring_cqe) void {
+    const d = get(w, di);
+    d.pending -= 1;
+    defer if (d.phase == .closing and d.pending == 0) w.reapLater(.down, di, gen(w, di));
+    if (cqe.res < 0) {
+        d.out.inflight = false;
+        closeDown(w, di);
+        return;
+    }
+    const was_full = d.out.bytes > high_water;
+    d.out.complete(&w.segs, @intCast(cqe.res), w);
+    w.stats.add(.bytes_sent, @intCast(cqe.res));
+    if (d.phase == .closing) return;
+    if (!d.out.isEmpty()) {
+        flushDown(w, di);
+    } else if (d.close_after_flush and !d.lingering) {
+        beginLinger(w, di);
+    }
+    if (was_full and d.out.bytes <= high_water) {
+        if (d.up) |ui| upool.updateRecv(w, ui);
+    }
+}
+
+/// Graceful close: send FIN, then wait briefly for the client's FIN so
+/// unread request bytes do not turn into an RST that destroys the response.
+fn beginLinger(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (d.lingering or d.phase == .closing) return;
+    d.lingering = true;
+    socket.shutdownWrite(d.fd);
+    if (d.peer_eof) {
+        closeDown(w, di);
+        return;
+    }
+    w.schedule(&d.timer, .down, di, gen(w, di), linger_ms);
+    updateDownRecv(w, di);
+}
+
+// ---------------------------------------------------------------- close
+
+pub fn closeDown(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (d.phase == .closing) return;
+    d.phase = .closing;
+    w.wheel.cancel(&d.timer);
+    detachUp(w, di, true);
+    if (d.snap) |s| {
+        w.unpin(s);
+        d.snap = null;
+    }
+    if (d.head_block) |hb| {
+        w.blocks.unref(hb);
+        d.head_block = null;
+    }
+    if (d.pending > 0) w.loop.cancelFd(d.fd);
+    w.reapLater(.down, di, gen(w, di));
+}
+
+pub fn maybeFreeDown(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (d.phase != .closing or d.pending > 0) return;
+    d.out.clear(&w.segs, w);
+    d.in.release(&w.blocks);
+    socket.closeFd(d.fd);
+    w.listeners[d.listener].conns -= 1;
+    w.downs.release(di);
+    w.stats.dec(.downstream_cx_active);
+}
+
+pub fn onDownTimer(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    switch (d.phase) {
+        .closing => {},
+        .head => {
+            if (d.lingering or d.close_after_flush) return closeDown(w, di);
+            if (d.in.isEmpty() and d.scanner.pos == 0) return closeDown(w, di); // keep-alive idle
+            localError(w, di, 408, true);
+        },
+        .exchange => {
+            if (d.up != null and !d.resp_started) {
+                w.stats.inc(.upstream_rq_timeout);
+                localError(w, di, 504, true);
+            } else closeDown(w, di);
+        },
+    }
+}
+
+/// Listener removed: close idle connections now, finish in-flight
+/// exchanges with `Connection: close`.
+pub fn drainListener(w: *Worker, slot: u16) void {
+    for (w.downs.items, 0..) |*d, i| {
+        if (!w.downs.live[i] or d.listener != slot) continue;
+        drainOne(w, @intCast(i));
+    }
+}
+
+pub fn drainAll(w: *Worker) void {
+    for (w.downs.items, 0..) |_, i| {
+        if (w.downs.live[i]) drainOne(w, @intCast(i));
+    }
+}
+
+fn drainOne(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    switch (d.phase) {
+        .closing => {},
+        .head => if (!d.close_after_flush and d.in.isEmpty()) closeDown(w, di),
+        .exchange => d.keep_alive = false,
+    }
+}
+
+pub fn closeAll(w: *Worker) void {
+    for (w.downs.items, 0..) |_, i| {
+        if (w.downs.live[i]) closeDown(w, @intCast(i));
+    }
+}
