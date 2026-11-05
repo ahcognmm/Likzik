@@ -11,7 +11,7 @@ Legend: **done**, **partial**, **not started**.
 | Decision | Status | Notes |
 | --- | --- | --- |
 | io_uring primary backend, Linux 6.18 LTS / 6.14+ dev | done | Startup check enforces 6.14+ (`--allow-old-kernel` for 6.1+). |
-| OpenSSL 3 with full kTLS | done, kTLS path untested here | See TLS below. |
+| OpenSSL 3 with full kTLS | done | See TLS below. |
 | Thread-per-core, shared-nothing, SO_REUSEPORT per worker | done | Workers pinned to CPUs (`--no-pin` to disable). |
 | Immutable snapshots swapped RCU-style | done | `config/rcu.zig`, epoch-based reclamation. |
 | Zig pinned, `std.os.linux.IoUring` directly | done | Pinned to 0.17.x (upgraded from 0.16.0; the plan named 0.16.x). The core uses only `std.os.linux` and `std.mem`, not `std.Io`. |
@@ -21,7 +21,7 @@ Legend: **done**, **partial**, **not started**.
 | Area | Status | Notes |
 | --- | --- | --- |
 | HTTP/1.1 proxying | done | Keep-alive, pipelining (in order), chunked and Content-Length bodies, close-delimited responses, 1xx forwarding, de-chunking for HTTP/1.0 clients. |
-| HTTPS termination + upstream TLS | done (kTLS path untested here) | See TLS below. |
+| HTTPS termination + upstream TLS | done | See TLS below. |
 | TCP/L4 proxying | done | splice, half-close, idle timeout, connect retry. SNI passthrough and PROXY protocol not started. |
 | File + inotify reload, RCU core | done | Rename-into-place handled; invalid config keeps the old snapshot. |
 | Routing, upstream pools, LB | done | Linear first-match routing for now; the radix trie is gateway-phase. |
@@ -49,7 +49,7 @@ Legend: **done**, **partial**, **not started**.
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| OpenSSL 3.x with kTLS both directions | done, kTLS path untested here | Linked against the system OpenSSL 3 (fetching `allyourcodebase/openssl` was not possible from the build environment). The dev VM's kernel lacks `CONFIG_TLS`, so only the userspace fallback has been exercised end to end. The kTLS path (plaintext recv/sendmsg after handshake, EIO control records) must be tested on a 6.14+ kernel with the `tls` module before release. |
+| OpenSSL 3.x with kTLS both directions | done, kTLS verified on Linux 7.0 aarch64 | Linked against the system OpenSSL 3 (fetching `allyourcodebase/openssl` was not possible from the build environment). The dev VM's kernel lacks `CONFIG_TLS`; the kTLS path was first exercised by the benchmark on Linux 7.0.0 (Ubuntu 26.04, aarch64): 93,606 connections on kTLS, 0 userspace fallbacks, no errors. Body integrity over kTLS still needs `tests/integration/run.sh` on such a kernel (with `require_ktls` true). |
 | Comptime `TlsBackend` interface | done | `tls/backend.zig` checks the backend's declarations at compile time. |
 | Handshake sans-I/O over memory BIOs | different mechanism | OpenSSL can only switch kTLS on through a socket BIO, so the handshake runs on the socket and ring readiness polls drive it. The goal (kTLS keys installed by `SSL_OP_ENABLE_KTLS`, no record copying) is unchanged. |
 | Only kTLS-capable suites | done | TLS 1.3: AES-128/256-GCM, ChaCha20-Poly1305. TLS 1.2: ECDHE with the same AEADs. Min TLS 1.2. |

@@ -64,6 +64,24 @@ Linux 6.18, 2 workers each, 64 connections, wrk, `-Doptimize=fast`):
 likzik memory: about 10 MB PSS idle, 21 MB after the 1 MiB run (2 workers).
 nginx: about 16–17 MB.
 
+Linux 7.0.0, Ubuntu 26.04, 4 CPUs aarch64, kernel `tls` module loaded
+(kTLS on both proxies), 2 workers each, 64 connections, wrk:
+
+| workload | likzik req/s | nginx req/s | likzik cpu/req | nginx cpu/req | likzik p99 | nginx p99 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| HTTP keep-alive | 338k | 302k | 4.4 µs | 6.4 µs | 0.84 ms | 0.71 ms |
+| HTTP new connection | 112k | 98k | 11.1 µs | 15.2 µs | 0.88 ms | 2.02 ms |
+| HTTP 1 MiB body | 8.0k | 4.8k | 198 µs | 417 µs | 18.6 ms | 26.0 ms |
+| HTTPS keep-alive (kTLS) | 271k | 202k | 5.8 µs | 9.8 µs | 0.73 ms | 0.55 ms |
+| HTTPS new connection | 9.2k | 8.7k | 184 µs | 200 µs | 4.9 ms | 5.1 ms |
+| HTTPS 1 MiB body | 3.8k | 3.4k | 479 µs | 588 µs | 28.4 ms | 30.6 ms |
+| HTTPS → TLS upstream | 210k | 170k | 6.8 µs | 11.7 µs | 1.15 ms | 0.92 ms |
+
+That run predates equal keep-alive limits in the script (likzik recycled
+connections every 10,000 requests, nginx did not), which only penalized
+likzik. Keep-alive p99 is not comparable under wrk at different
+throughputs; use the rate section (wrk2) for that.
+
 Parser: about 3.7 M requests/s per core (1.1 GB/s) on mixed realistic heads.
 
 HTTPS on the same VM. Its kernel has no `CONFIG_TLS`, so both proxies run

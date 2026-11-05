@@ -65,8 +65,10 @@ $STREAM_MOD
 worker_processes $W; daemon on; pid $WORK/px.pid; error_log $WORK/px.err;
 events { worker_connections 16384; }
 http { access_log off; keepalive_requests 10000000; $temps
-  upstream backend { server 127.0.0.1:29001; keepalive 256; }
-  upstream backend_tls { server 127.0.0.1:29002; keepalive 256; }
+  # Same keep-alive limits as likzik: no recycling of downstream or
+  # upstream connections during a run.
+  upstream backend { server 127.0.0.1:29001; keepalive 256; keepalive_requests 10000000; }
+  upstream backend_tls { server 127.0.0.1:29002; keepalive 256; keepalive_requests 10000000; }
   proxy_http_version 1.1; proxy_set_header Connection ""; proxy_set_header X-Forwarded-For \$remote_addr;
   server { listen 127.0.0.1:28081 reuseport backlog=4096; location / { proxy_pass http://backend; } }
   server { listen 127.0.0.1:28082 ssl reuseport backlog=4096; $nginx_tls
@@ -80,7 +82,8 @@ NGX
 cert='{ "certificates": [ { "certificate_chain": "'$WORK'/cert.pem", "private_key": "'$WORK'/key.pem" } ] }'
 cat > "$WORK/likzik.json" <<JSON
 { "workers": $W, "admin": { "address": "127.0.0.1:28901" },
-  "limits": { "max_connections_per_worker": 32768 }, "tls": { "require_ktls": $REQUIRE_KTLS },
+  "limits": { "max_connections_per_worker": 32768, "max_requests_per_connection": 10000000 },
+  "tls": { "require_ktls": $REQUIRE_KTLS },
   "listeners": [
     { "name": "web", "address": "127.0.0.1:28080", "route_config": "r" },
     { "name": "tcp", "address": "127.0.0.1:28443", "protocol": "tcp", "cluster": "up" },
