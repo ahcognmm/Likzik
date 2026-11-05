@@ -115,7 +115,9 @@ check "3MB download intact" "$(curl -s $P/big.bin | md5sum)" "$BIG_MD5"
 check "HEAD keeps Content-Length" "$(curl -s -I $P/big.bin | grep -i '^content-length' | tr -d '\r')" "Content-Length: 3000000"
 
 echo "keep-alive and pipelining"
-curl -s -v $P/ $P/ $P/ 2>&1 | grep -q 'Re-using existing connection' && ok "client keep-alive" || bad "client keep-alive"
+# num_connects is 0 for a request that reused a connection (stable across
+# curl versions, unlike the wording of -v output).
+check "client keep-alive" "$(curl -s -w '%{num_connects} ' -o /dev/null $P/ -o /dev/null $P/ -o /dev/null $P/)" "1 0 0 "
 check "3 pipelined requests in order" "$(raw 'GET /1 HTTP/1.1\r\nHost: echo.test\r\n\r\nGET /2 HTTP/1.1\r\nHost: echo.test\r\n\r\nGET /3 HTTP/1.1\r\nHost: echo.test\r\nConnection: close\r\n\r\n' | grep -ao 'GET /[0-9]' | tr '\n' ' ')" "GET /1 GET /2 GET /3 "
 
 echo "request smuggling and malformed input"
