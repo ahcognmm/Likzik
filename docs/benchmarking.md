@@ -11,10 +11,24 @@ bench/vs_nginx.sh [workers=2] [seconds=10] [connections=64]
 zig build bench-parse -Doptimize=fast   # parser throughput
 ```
 
-The script runs keep-alive, new-connection, 1 MiB body and TCP passthrough
-workloads against likzik and against nginx configured as an equivalent
-reverse proxy (same upstream, upstream keepalive, `reuseport`, access log
-off, same worker count). It uses wrk2 when available, otherwise wrk.
+The script runs three sections (`SECTIONS="http https rate"` by default)
+against likzik and against nginx configured as an equivalent reverse proxy
+(same upstream, upstream keepalive, `reuseport`, access log off, same
+worker count, same certificate and TLS policy):
+
+- **http** (wrk, peak): keep-alive, new connection per request, 1 MiB body,
+  TCP passthrough.
+- **https** (wrk, peak): keep-alive, new TLS connection per request (full
+  handshake), 1 MiB body, and HTTPS to a TLS upstream (re-encryption with
+  certificate verification). Both proxies have kTLS enabled (likzik:
+  `require_ktls` when the module is loaded; nginx: `ssl_conf_command
+  Options KTLS`). The kTLS column is the number of kernel TLS sessions set
+  up during the run (`TlsTxSw` in `/proc/net/tls_stat`), so it shows
+  whether each proxy actually got kTLS rather than assuming it.
+- **rate** (wrk2): keep-alive HTTP and HTTPS at the same fixed request rate
+  for both proxies (default 70% of the slower one's peak, or `RATE`), with
+  p50/p99/p99.9/p99.99 corrected for coordinated omission. This is the
+  plan's gate (p99 at equal offered load). Needs `wrk2` on PATH or `WRK2`.
 Extra likzik flags can be passed with `LIKZIK_ARGS`. To find which part
 of the send/close path matters on a given machine, A/B these one at a time:
 
