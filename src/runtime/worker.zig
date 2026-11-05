@@ -41,7 +41,7 @@ pub const Shared = struct {
     /// Tuning that is fixed for the process lifetime.
     pbuf_size: u32 = 16 * 1024,
     pbuf_count: u16 = 256,
-    pin_cpus: bool = false,
+    pin_cpus: bool = true,
 };
 
 /// Wake reasons carried in the MSG_RING CQE result.

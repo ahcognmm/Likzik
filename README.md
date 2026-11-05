@@ -70,7 +70,7 @@ worker x N (1 per core)    own io_uring (SINGLE_ISSUER|DEFER_TASKRUN), own
 - **Config**: immutable snapshots in one arena each, swapped with an atomic pointer; epoch-based reclamation once every worker has moved past.
 - **Memory**: no malloc on the request path. Pools are sized up front, but pages are only committed when first used (about 10 MB PSS idle with 2 workers).
 - **Send path**: output is flushed once per completion, so a response head and a small body (≤ 2 KiB, copied after the head) go out as a single plain `send`; larger bodies are forwarded zero-copy with `sendmsg`.
-- **CPU pinning**: off by default, as in nginx. `--pin-cpus` pins worker N to CPU N; use it only on dedicated cores with IRQ affinity configured.
+- **CPU pinning**: worker N is pinned to CPU N by default (`--no-pin` disables it). Measured on the dev VM, pinning gives lower p50/p99 even when the load generator shares the host.
 
 Source layout: `src/runtime` (loop, buffer ring, timer wheel, worker),
 `src/http1` (parser, framing rules, codec), `src/proxy` (HTTP state

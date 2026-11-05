@@ -15,8 +15,15 @@ The script runs keep-alive, new-connection, 1 MiB body and TCP passthrough
 workloads against likzik and against nginx configured as an equivalent
 reverse proxy (same upstream, upstream keepalive, `reuseport`, access log
 off, same worker count). It uses wrk2 when available, otherwise wrk.
-Extra likzik flags can be passed with `LIKZIK_ARGS` (e.g.
-`LIKZIK_ARGS=--pin-cpus`).
+Extra likzik flags can be passed with `LIKZIK_ARGS`. To find which part
+of the send/close path matters on a given machine, A/B these one at a time:
+
+```sh
+LIKZIK_ARGS="--no-pin"         bench/vs_nginx.sh   # workers float (nginx's default)
+LIKZIK_ARGS="--buffers 1024"   bench/vs_nginx.sh   # larger provided-buffer ring
+LIKZIK_ARGS="--no-coalesce"    bench/vs_nginx.sh   # head and small body as separate segments
+LIKZIK_ARGS="--always-linger"  bench/vs_nginx.sh   # wait for the client FIN before closing
+```
 
 Besides req/s and latency it reports, for the proxy processes only (not wrk,
 not the upstream):

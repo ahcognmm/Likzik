@@ -689,8 +689,13 @@ fn holdOwner(w: *Worker, o: sq.Owner) void {
 /// the source buffer is not held at all.
 const coalesce_max = 2048;
 
+/// Runtime switches for A/B testing the send and close paths
+/// (--no-coalesce, --always-linger). Set once before workers start.
+pub var coalesce_enabled: bool = true;
+pub var direct_close_enabled: bool = true;
+
 fn tryCoalesce(w: *Worker, q: *sq.SendQueue, bytes: []const u8) bool {
-    if (bytes.len > coalesce_max or q.inflight) return false;
+    if (!coalesce_enabled or bytes.len > coalesce_max or q.inflight) return false;
     const t = q.tailSeg(&w.segs) orelse return false;
     const b = switch (t.owner) {
         .block => |id| id,
@@ -1420,7 +1425,7 @@ fn downSent(w: *Worker, di: u32, n: usize) void {
 
 fn closeOrLinger(w: *Worker, di: u32) void {
     const d = get(w, di);
-    if (d.linger_needed) return beginLinger(w, di);
+    if (d.linger_needed or !direct_close_enabled) return beginLinger(w, di);
     if (d.tls) |t| if (d.tls_mode == .user or d.tls_mode == .ktls) Tls.shutdown(t);
     closeDown(w, di);
 }

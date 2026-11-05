@@ -29,7 +29,9 @@ const usage =
     \\  -t, --check           validate the config and exit
     \\  -w, --workers N       override the worker count
     \\      --buffers N       provided recv buffers per worker (power of 2, default 256)
-    \\      --pin-cpus        pin worker N to CPU N (for dedicated cores with IRQ affinity)
+    \\      --no-pin          do not pin worker N to CPU N
+    \\      --no-coalesce     (A/B testing) do not merge small bodies into the head send
+    \\      --always-linger   (A/B testing) always wait for the client FIN before closing
     \\      --allow-old-kernel  allow kernels older than 6.14 (development)
     \\      --version         print the version and exit
     \\
@@ -39,7 +41,7 @@ const Args = struct {
     config: []const u8 = "likzik.json",
     check: bool = false,
     workers: ?u16 = null,
-    pin: bool = false,
+    pin: bool = true,
     allow_old_kernel: bool = false,
     buffers: u16 = 256,
 };
@@ -65,9 +67,13 @@ fn parseArgs(list: []const [:0]const u8) !Args {
             a.buffers = try std.fmt.parseInt(u16, list[i], 10);
             if (!std.math.isPowerOfTwo(a.buffers)) return error.BadArgs;
         } else if (std.mem.eql(u8, s, "--pin-cpus")) {
-            a.pin = true;
+            a.pin = true; // the default; kept for compatibility
         } else if (std.mem.eql(u8, s, "--no-pin")) {
-            a.pin = false; // the default; kept for compatibility
+            a.pin = false;
+        } else if (std.mem.eql(u8, s, "--no-coalesce")) {
+            likzik.proxy.http.coalesce_enabled = false;
+        } else if (std.mem.eql(u8, s, "--always-linger")) {
+            likzik.proxy.http.direct_close_enabled = false;
         } else if (std.mem.eql(u8, s, "--allow-old-kernel")) {
             a.allow_old_kernel = true;
         } else if (std.mem.eql(u8, s, "--version")) {
