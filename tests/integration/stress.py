@@ -7,13 +7,17 @@ slowly, pipeline, send garbage. Meanwhile well-behaved clients verify that
 every response they get is byte-exact. Run against a Debug or ReleaseSafe
 build so the proxy's ownership assertions are live.
 
-usage: stress.py HOST:PORT SECONDS
+usage: stress.py HOST:PORT SECONDS [--tls]
 """
-import hashlib, os, random, socket, sys, threading, time
+import hashlib, os, random, socket, ssl, sys, threading, time
 
 host, port = sys.argv[1].rsplit(':', 1)
 port = int(port)
 duration = float(sys.argv[2]) if len(sys.argv) > 2 else 20
+use_tls = '--tls' in sys.argv
+tls_ctx = ssl.create_default_context()
+tls_ctx.check_hostname = False
+tls_ctx.verify_mode = ssl.CERT_NONE
 deadline = time.time() + duration
 BIG_MD5 = hashlib.md5(open('/srv/www/big.bin', 'rb').read()).hexdigest()
 stats = {'ok': 0, 'bad': 0, 'aborted': 0, 'errors': 0}
@@ -25,6 +29,8 @@ def bump(k):
 def conn():
     s = socket.create_connection((host, port), timeout=10)
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    if use_tls:
+        s = tls_ctx.wrap_socket(s, server_hostname='a.test')
     return s
 
 def read_response(f):
@@ -101,8 +107,14 @@ def slow_reader():
         got += len(d); time.sleep(0.001)
     s.close(); bump('aborted')
 
+def abort_mid_handshake():
+    s = socket.create_connection((host, port), timeout=10)
+    if use_tls:
+        s.sendall(b'\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03' + os.urandom(random.randint(0, 200)))
+    s.close(); bump('aborted')
+
 def garbage():
-    s = conn()
+    s = socket.create_connection((host, port), timeout=10)
     s.sendall(os.urandom(random.randint(1, 5000)))
     try: s.recv(4096)
     except Exception: pass
@@ -116,7 +128,7 @@ def chunked_upload_bad():
     s.close(); bump('aborted')
 
 actions = [good_big, good_echo_upload, good_pipeline, abort_mid_download, abort_mid_upload,
-           abort_mid_head, slow_reader, garbage, chunked_upload_bad]
+           abort_mid_head, slow_reader, garbage, chunked_upload_bad, abort_mid_handshake]
 
 def run():
     while time.time() < deadline:

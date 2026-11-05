@@ -13,6 +13,7 @@ const snapshot = @import("../config/snapshot.zig");
 const file_watch = @import("../config/sources/file_watch.zig");
 const socket = @import("../net/socket.zig");
 const admin = @import("admin_server.zig");
+const ktls = @import("../tls/ktls.zig");
 const build_options = @import("build_options");
 
 const log = std.log.scoped(.control);
@@ -161,6 +162,11 @@ pub const Control = struct {
             self.fail(if (e == error.InvalidConfig) diag.message() else @errorName(e));
             return false;
         };
+        if (snap.uses_tls and snap.require_ktls and !ktls.available()) {
+            snap.destroy();
+            self.fail("config uses TLS with require_ktls, but kernel TLS (the 'tls' module) is not loaded");
+            return false;
+        }
         const old = self.shared.rcu.load();
         if (snap.limits.max_connections_per_worker != old.limits.max_connections_per_worker)
             log.warn("limits.max_connections_per_worker changes take effect on restart", .{});

@@ -29,6 +29,22 @@ Linux 6.18, 2 workers each, 64 connections, wrk, ReleaseFast):
 
 Parser: about 3.7 M requests/s per core (1.1 GB/s) on mixed realistic heads.
 
+HTTPS on the same VM. Its kernel has no `CONFIG_TLS`, so both proxies run
+userspace TLS; this is not the kTLS comparison the plan targets. ECDSA
+P-256, TLS 1.3, 2 workers each, 64 connections:
+
+| workload | likzik req/s | nginx req/s | likzik p99 | nginx p99 |
+| --- | ---: | ---: | ---: | ---: |
+| keep-alive | 77–79k | 78–79k | 4.1–4.4 ms | 3.8–4.2 ms |
+| new TLS connection per request | 4.6–5.6k | 4.2–4.7k | 16–21 ms | 6–8 ms |
+
+On new connections, wrk's latency covers only the request after the
+handshake. likzik finishes more handshakes per second, so requests queue
+behind them, while nginx delays handshakes instead. Measured end to end
+(handshake plus request, curl probes during the run), likzik was
+equal or faster: 5–25 ms to first byte vs 12–28 ms for nginx. A fixed-rate
+run with handshake time included is the right way to judge this.
+
 ## Numbers worth publishing
 
 - Separate load-generator hosts; same NIC and kernel on the proxy host.

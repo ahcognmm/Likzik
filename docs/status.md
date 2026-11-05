@@ -11,7 +11,7 @@ Legend: **done**, **partial**, **not started**.
 | Decision | Status | Notes |
 | --- | --- | --- |
 | io_uring primary backend, Linux 6.18 LTS / 6.14+ dev | done | Startup check enforces 6.14+ (`--allow-old-kernel` for 6.1+). |
-| OpenSSL 3 with full kTLS | not started | See TLS below. |
+| OpenSSL 3 with full kTLS | done, kTLS path untested here | See TLS below. |
 | Thread-per-core, shared-nothing, SO_REUSEPORT per worker | done | Workers pinned to CPUs (`--no-pin` to disable). |
 | Immutable snapshots swapped RCU-style | done | `config/rcu.zig`, epoch-based reclamation. |
 | Zig 0.16.x, `std.os.linux.IoUring` directly | done | The core uses only `std.os.linux` and `std.mem`, not `std.Io`. |
@@ -21,7 +21,7 @@ Legend: **done**, **partial**, **not started**.
 | Area | Status | Notes |
 | --- | --- | --- |
 | HTTP/1.1 proxying | done | Keep-alive, pipelining (in order), chunked and Content-Length bodies, close-delimited responses, 1xx forwarding, de-chunking for HTTP/1.0 clients. |
-| HTTPS termination + upstream TLS | not started | Config with `tls` is rejected with a clear message. |
+| HTTPS termination + upstream TLS | done (kTLS path untested here) | See TLS below. |
 | TCP/L4 proxying | done | splice, half-close, idle timeout, connect retry. SNI passthrough and PROXY protocol not started. |
 | File + inotify reload, RCU core | done | Rename-into-place handled; invalid config keeps the old snapshot. |
 | Routing, upstream pools, LB | done | Linear first-match routing for now; the radix trie is gateway-phase. |
@@ -45,14 +45,25 @@ Legend: **done**, **partial**, **not started**.
 | Startup checks (kernel, sysctl, seccomp) | done | Probes ring creation and maps EPERM/ENOSYS/ENOMEM to actionable messages. |
 | Deployment docs | done | docs/deployment.md. |
 
-## TLS and kTLS — not started
+## TLS and kTLS
 
-Blocked in this environment only by testing: the development VM's kernel is
-built without `CONFIG_TLS`, so kTLS cannot be exercised here. Planned shape
-is unchanged (sans-I/O handshake over memory BIOs, kTLS for both directions,
-`TLS_GET_RECORD_TYPE` control-record handling, KeyUpdate, SNI cert
-selection, ticket keys in the snapshot, kTLS share metric). The open
-question about OpenSSL performing KeyUpdate with kTLS is still open.
+| Item | Status | Notes |
+| --- | --- | --- |
+| OpenSSL 3.x with kTLS both directions | done, kTLS path untested here | Linked against the system OpenSSL 3 (fetching `allyourcodebase/openssl` was not possible from the build environment). The dev VM's kernel lacks `CONFIG_TLS`, so only the userspace fallback has been exercised end to end. The kTLS path (plaintext recv/sendmsg after handshake, EIO control records) must be tested on a 6.14+ kernel with the `tls` module before release. |
+| Comptime `TlsBackend` interface | done | `tls/backend.zig` checks the backend's declarations at compile time. |
+| Handshake sans-I/O over memory BIOs | different mechanism | OpenSSL can only switch kTLS on through a socket BIO, so the handshake runs on the socket and ring readiness polls drive it. The goal (kTLS keys installed by `SSL_OP_ENABLE_KTLS`, no record copying) is unchanged. |
+| Only kTLS-capable suites | done | TLS 1.3: AES-128/256-GCM, ChaCha20-Poly1305. TLS 1.2: ECDHE with the same AEADs. Min TLS 1.2. |
+| Userspace fallback, guarded | done | Refused unless `"tls": {"require_ktls": false}`; startup warning; `tls_userspace` metric. |
+| Control records (EIO + `TLS_GET_RECORD_TYPE`) | written, untested | On EIO/EKEYEXPIRED from a kTLS socket, `SSL_read` handles the record (OpenSSL's kTLS code does the cmsg read), then the multishot recv is re-armed. |
+| TLS 1.3 KeyUpdate with kTLS | open | Still the plan's open question: whether OpenSSL 3.x installs the new RX key itself. If not, the connection fails closed. |
+| SNI certificate selection | done | Exact, `*.suffix`, default. |
+| ALPN | done | `http/1.1` only; h2 later. |
+| Session tickets: shared key set, rotated by the control plane | partial | Tickets work (one per handshake), with keys per SSL_CTX, which is shared by all workers. Keys change on every reload; explicit key distribution and rotation are not done. |
+| Cert hot reload, refcounted old SSL_CTX | done | Tested: new connections get the new cert, in-flight ones finish, broken certs are rejected. |
+| Startup check `/proc/net/tls_stat` | done | Also enforced on reload. |
+| kTLS share metric | done | `tls_ktls` vs `tls_userspace` (both downstream and upstream connections). |
+| Upstream TLS | done | SNI, verification (hostname + CA), pooled per cluster. |
+| TLS on TCP listeners, SNI passthrough | not started | |
 
 ## Memory
 

@@ -22,7 +22,7 @@ pub const config = struct {
 };
 
 test {
-    inline for (.{ http1, net, config, mem, runtime, upstream, proxy, l4, control, observe }) |ns| {
+    inline for (.{ http1, net, config, mem, runtime, upstream, tls, proxy, l4, control, observe }) |ns| {
         inline for (@typeInfo(ns).@"struct".decls) |d| _ = @field(ns, d.name);
     }
     _ = rcu;
@@ -47,6 +47,13 @@ pub const upstream = struct {
     pub const health = @import("upstream/health.zig");
     pub const lb = @import("upstream/lb.zig");
     pub const pool = @import("upstream/pool.zig");
+};
+
+pub const tls = struct {
+    pub const backend = @import("tls/backend.zig");
+    pub const openssl = @import("tls/openssl.zig");
+    pub const sni = @import("tls/sni.zig");
+    pub const ktls = @import("tls/ktls.zig");
 };
 
 pub const proxy = struct {

@@ -99,7 +99,7 @@ const testing = std.testing;
 fn mkCluster(eps: []snapshot.Endpoint, lb: anytype) snapshot.Cluster {
     var total: u32 = 0;
     for (eps) |e| total += e.weight;
-    return .{ .name = "c", .id = 0, .lb = lb, .connect_timeout_ms = 1, .idle_timeout_ms = 1, .max_idle_per_endpoint = 1, .max_connect_attempts = 2, .eject_after_failures = 3, .eject_ms = 1000, .endpoints = eps, .total_weight = total };
+    return .{ .name = "c", .id = 0, .lb = lb, .connect_timeout_ms = 1, .idle_timeout_ms = 1, .max_idle_per_endpoint = 1, .max_connect_attempts = 2, .eject_after_failures = 3, .eject_ms = 1000, .endpoints = eps, .total_weight = total, .tls = null };
 }
 
 fn ep(id: u32, w: u32) snapshot.Endpoint {

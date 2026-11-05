@@ -19,6 +19,12 @@ const snapshot = @import("../config/snapshot.zig");
 const socket = @import("../net/socket.zig");
 const Address = @import("../net/addr.zig").Address;
 const http = @import("../proxy/http.zig");
+const tls_backend = @import("../tls/backend.zig");
+const Tls = tls_backend.Tls;
+
+/// Pool key for plaintext connections; TLS connections use the cluster id
+/// (each cluster has its own TLS context, SNI and verification settings).
+pub const plain_key = std.math.maxInt(u32);
 
 pub const State = enum { connecting, busy, idle, closing };
 
@@ -44,6 +50,13 @@ pub const Up = struct {
     idle_timeout_ms: u32,
     max_idle: u32,
     connect_ts: linux.kernel_timespec = .{ .sec = 0, .nsec = 0 },
+    pool_key: u32 = plain_key,
+    tls: ?*Tls.Conn = null,
+    tls_mode: tls_backend.Mode = .none,
+    tls_poll_in: bool = false,
+    tls_poll_out: bool = false,
+    tls_flushing: bool = false,
+    tls_reading: bool = false,
 };
 
 pub fn get(w: *Worker, ui: u32) *Up {
@@ -58,11 +71,14 @@ pub fn udOf(w: *Worker, op: @import("../runtime/loop.zig").Op, ui: u32) u64 {
 /// else a new connection in state `connecting`.
 pub fn acquire(w: *Worker, ep: *const snapshot.Endpoint, c: *const snapshot.Cluster) !u32 {
     const st = try w.eps.get(w.gpa, ep.id);
-    while (st.idle_head) |ui| {
-        unlinkIdle(w, ui);
+    const key: u32 = if (c.tls != null) c.id else plain_key;
+    var it = st.idle_head;
+    while (it) |ui| {
         const u = get(w, ui);
+        it = u.idle_next;
+        if (u.pool_key != key or u.state != .idle) continue;
+        unlinkIdle(w, ui);
         w.wheel.cancel(&u.timer);
-        if (u.state != .idle) continue;
         u.state = .busy;
         u.reused = true;
         u.idle_timeout_ms = c.idle_timeout_ms;
@@ -83,7 +99,18 @@ pub fn acquire(w: *Worker, ep: *const snapshot.Endpoint, c: *const snapshot.Clus
         .state = .connecting,
         .idle_timeout_ms = c.idle_timeout_ms,
         .max_idle = c.max_idle_per_endpoint,
+        .pool_key = key,
     };
+    if (c.tls) |t| {
+        // Created now so it holds a reference on the cluster's SSL_CTX even
+        // if the snapshot is replaced while connecting.
+        u.tls = Tls.newClientConn(t.ctx, fd, t.sni, t.verify) orelse {
+            socket.closeFd(fd);
+            w.ups.release(ui);
+            return error.TlsSetupFailed;
+        };
+        u.tls_mode = .handshake;
+    }
     u.connect_ts = .{ .sec = @intCast(c.connect_timeout_ms / 1000), .nsec = @intCast((c.connect_timeout_ms % 1000) * std.time.ns_per_ms) };
     w.loop.connect(fd, &u.addr.any, u.addr.len(), &u.connect_ts, udOf(w, .u_connect, ui));
     u.pending += 1;
@@ -142,6 +169,7 @@ pub fn maybeFree(w: *Worker, ui: u32) void {
     if (u.state != .closing or u.pending > 0) return;
     u.out.clear(&w.segs, w);
     u.in.release(&w.blocks);
+    if (u.tls) |t| Tls.freeConn(t);
     socket.closeFd(u.fd);
     w.ups.release(ui);
     w.stats.dec(.upstream_cx_active);
@@ -162,6 +190,15 @@ pub fn closeAll(w: *Worker) void {
 /// Keeps the multishot recv armed when the connection should be read
 /// (connected and the downstream is not backpressured), cancels it
 /// otherwise.
+pub fn wantRecv(w: *Worker, ui: u32) bool {
+    const u = get(w, ui);
+    return switch (u.state) {
+        .idle => true,
+        .busy => if (u.owner) |di| !http.downBackpressured(w, di) else true,
+        .connecting, .closing => false,
+    };
+}
+
 pub fn updateRecv(w: *Worker, ui: u32) void {
     const u = get(w, ui);
     var want = switch (u.state) {
@@ -173,6 +210,14 @@ pub fn updateRecv(w: *Worker, ui: u32) void {
         if (u.owner) |di| {
             if (http.downBackpressured(w, di)) want = false;
         }
+    }
+    switch (u.tls_mode) {
+        .handshake => return,
+        .user => {
+            if (want) w.tlsKick(.up, ui, w.ups.gen(ui));
+            return;
+        },
+        .none, .ktls => {},
     }
     if (want and !u.recv_armed) {
         w.loop.recvMultishot(u.fd, worker_mod.buffer_group, udOf(w, .u_recv, ui));
@@ -188,6 +233,7 @@ pub fn updateRecv(w: *Worker, ui: u32) void {
 pub fn flush(w: *Worker, ui: u32) void {
     const u = get(w, ui);
     if (u.state != .busy or u.out.inflight or u.out.isEmpty()) return;
+    if (u.tls_mode == .user) return http.tlsFlushUp(w, ui);
     const msg = u.out.prepare(&w.segs);
     w.loop.sendmsg(u.fd, msg, udOf(w, .u_send, ui));
     u.pending += 1;

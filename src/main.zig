@@ -133,7 +133,7 @@ pub fn main(init: std.process.Init) !u8 {
         return 0;
     }
 
-    checks.run(gpa, .{ .allow_old_kernel = args.allow_old_kernel }) catch {
+    checks.run(gpa, .{ .allow_old_kernel = args.allow_old_kernel, .uses_tls = first.uses_tls, .need_ktls = first.require_ktls }) catch {
         first.destroy();
         return 1;
     };

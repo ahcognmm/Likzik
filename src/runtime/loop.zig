@@ -24,6 +24,11 @@ pub const Op = enum(u8) {
     t_out_d,
     t_out_u,
     t_connect,
+    /// TLS readiness (handshake and userspace-TLS data path).
+    d_tls_in,
+    d_tls_out,
+    u_tls_in,
+    u_tls_out,
     tick,
     wake,
 };

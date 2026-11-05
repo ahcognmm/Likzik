@@ -29,6 +29,14 @@ pub const Counter = enum {
     upstream_rq_timeout,
     upstream_cx_protocol_error,
     endpoint_ejections,
+    tls_handshakes,
+    tls_handshake_errors,
+    /// Connections whose TLS runs in the kernel (kTLS, both directions).
+    tls_ktls,
+    /// Connections that fell back to userspace TLS.
+    tls_userspace,
+    upstream_tls_handshakes,
+    upstream_tls_handshake_errors,
     tcp_cx_total,
     tcp_cx_active,
     tcp_bytes,

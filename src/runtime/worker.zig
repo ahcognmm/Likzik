@@ -92,8 +92,15 @@ pub const Worker = struct {
     reap: std.ArrayList(Reap) = .empty,
     rearm_downs: std.ArrayList(Reap) = .empty,
     rearm_ups: std.ArrayList(Reap) = .empty,
+    /// Userspace-TLS connections to read from at the end of this
+    /// iteration (reads are deferred to avoid re-entering the state
+    /// machine from inside itself).
+    tls_kicks: std.ArrayList(Reap) = .empty,
     draining: bool = false,
     drain_deadline_ms: u64 = 0,
+    /// Set by CPU-heavy work (TLS handshakes): flush queued SQEs right away
+    /// so sends are not held behind the rest of the completion batch.
+    flush_now: bool = false,
     tick_ts: linux.kernel_timespec = .{ .sec = 0, .nsec = tw.tick_ms * std.time.ns_per_ms },
     cqes: [512]linux.io_uring_cqe = undefined,
 
@@ -144,6 +151,7 @@ pub const Worker = struct {
         self.reap.deinit(self.gpa);
         self.rearm_downs.deinit(self.gpa);
         self.rearm_ups.deinit(self.gpa);
+        self.tls_kicks.deinit(self.gpa);
         self.eps.deinit(self.gpa);
         self.tunnels.deinit(self.gpa);
         self.ups.deinit(self.gpa);
@@ -196,9 +204,16 @@ pub const Worker = struct {
             self.now_ms = nowMs();
             while (true) {
                 const n = self.loop.ring.copy_cqes(&self.cqes, 0) catch 0;
-                for (self.cqes[0..n]) |*cqe| self.dispatch(cqe);
+                for (self.cqes[0..n]) |*cqe| {
+                    self.dispatch(cqe);
+                    if (self.flush_now or self.loop.ring.sq_ready() >= 64) {
+                        self.flush_now = false;
+                        _ = self.loop.ring.submit() catch {};
+                    }
+                }
                 if (n < self.cqes.len) break;
             }
+            self.processTlsKicks();
             self.processReap();
             self.processRearm();
             self.checkSnapshot();
@@ -221,6 +236,10 @@ pub const Worker = struct {
             .u_recv => http.onUpRecv(self, u.idx, cqe),
             .u_send => http.onUpSend(self, u.idx, cqe),
             .t_in_d, .t_in_u, .t_out_d, .t_out_u, .t_connect => tcp.onEvent(self, u, cqe),
+            .d_tls_in => http.onDownTlsEvent(self, u.idx, true, cqe),
+            .d_tls_out => http.onDownTlsEvent(self, u.idx, false, cqe),
+            .u_tls_in => http.onUpTlsEvent(self, u.idx, true, cqe),
+            .u_tls_out => http.onUpTlsEvent(self, u.idx, false, cqe),
         }
     }
 
@@ -261,6 +280,25 @@ pub const Worker = struct {
     pub fn needRearm(self: *Worker, kind: TimerKind, idx: u32, gen: u32) void {
         const list = if (kind == .down) &self.rearm_downs else &self.rearm_ups;
         list.append(self.gpa, .{ .kind = kind, .idx = idx, .gen = gen }) catch {};
+    }
+
+    pub fn tlsKick(self: *Worker, kind: TimerKind, idx: u32, gen: u32) void {
+        self.tls_kicks.append(self.gpa, .{ .kind = kind, .idx = idx, .gen = gen }) catch {};
+    }
+
+    fn processTlsKicks(self: *Worker) void {
+        // Kicks may queue more kicks; process until quiet (bounded).
+        var rounds: u8 = 0;
+        while (self.tls_kicks.items.len > 0 and rounds < 8) : (rounds += 1) {
+            var list = self.tls_kicks;
+            self.tls_kicks = .empty;
+            for (list.items) |k| switch (k.kind) {
+                .down => if (self.downs.valid(k.idx, k.gen)) http.tlsReadDown(self, k.idx),
+                .up => if (self.ups.valid(k.idx, k.gen)) http.tlsReadUp(self, k.idx),
+                .tunnel => {},
+            };
+            list.deinit(self.gpa);
+        }
     }
 
     fn processRearm(self: *Worker) void {

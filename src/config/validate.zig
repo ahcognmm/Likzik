@@ -60,7 +60,16 @@ pub fn validate(cfg: *const model.Config, d: *Diag) error{InvalidConfig}!void {
             const b = Address.parse(other.address) catch unreachable;
             if (a.eql(&b)) return d.set("listeners '{s}' and '{s}' share address {s}", .{ other.name, li.name, li.address });
         }
-        if (li.tls != null) return d.set("listener '{s}': TLS termination is not available in this build yet", .{li.name});
+        if (li.tls) |t| {
+            if (li.protocol != .http) return d.set("listener '{s}': TLS on tcp listeners is not supported yet", .{li.name});
+            if (t.certificates.len == 0) return d.set("listener '{s}': tls needs at least one certificate", .{li.name});
+            if (t.certificates.len > 256) return d.set("listener '{s}': too many certificates", .{li.name});
+            for (t.certificates) |cert| for (cert.server_names) |n| {
+                if (n.len == 0 or n.len > 253) return d.set("listener '{s}': invalid server name", .{li.name});
+                if (std.mem.indexOfScalar(u8, n, '*')) |star| if (star != 0 or n.len < 3 or n[1] != '.')
+                    return d.set("listener '{s}': unsupported wildcard '{s}'", .{ li.name, n });
+            };
+        }
         switch (li.protocol) {
             .http => {
                 const rc = li.route_config orelse return d.set("listener '{s}': http listener needs route_config", .{li.name});
@@ -120,6 +129,9 @@ pub fn validate(cfg: *const model.Config, d: *Diag) error{InvalidConfig}!void {
         if (c.endpoints.len > 4096) return d.set("cluster '{s}': too many endpoints", .{c.name});
         if (c.max_connect_attempts == 0) return d.set("cluster '{s}': max_connect_attempts must be >= 1", .{c.name});
         if (c.connect_timeout_ms == 0) return d.set("cluster '{s}': connect_timeout_ms must be > 0", .{c.name});
+        if (c.tls) |t| {
+            if (t.verify and t.sni == null) return d.set("cluster '{s}': tls.verify needs tls.sni (the name to check the certificate against)", .{c.name});
+        }
         for (c.endpoints) |e| {
             _ = Address.parse(e.address) catch return d.set("cluster '{s}': invalid endpoint address '{s}'", .{ c.name, e.address });
             if (e.weight == 0 or e.weight > 1000) return d.set("cluster '{s}': endpoint weight must be 1..1000", .{c.name});

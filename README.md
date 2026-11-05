@@ -3,14 +3,15 @@
 A Linux-only reverse proxy written in Zig on io_uring, the base for an API gateway.
 The target is nginx-level throughput and tail latency at the same core count.
 
-**Status: Phase 1 core (pre-release).** HTTP/1.1 and TCP/L4 proxying,
-file-based config with hot reload, graceful drain, metrics. TLS, xDS and
-the gateway filters are not built yet; see [docs/status.md](docs/status.md)
-for the plan-by-plan breakdown.
+**Status: Phase 1 core (pre-release).** HTTP/1.1, HTTPS (termination and
+upstream TLS, kTLS-first) and TCP/L4 proxying, file-based config with hot
+reload, graceful drain, metrics. xDS and the gateway filters are not built
+yet; see [docs/status.md](docs/status.md) for the plan-by-plan breakdown.
 
 ## Build
 
-Requires Zig 0.16.x and Linux 6.14+ (6.18 LTS in production).
+Requires Zig 0.16.x, OpenSSL 3.x development files (`libssl-dev`), and
+Linux 6.14+ (6.18 LTS in production).
 
 ```sh
 zig build -Doptimize=ReleaseSafe      # binary in zig-out/bin/likzik
@@ -48,6 +49,8 @@ fields are rejected. See [config/likzik.example.json](config/likzik.example.json
 - **Load balancing**: `least_request` (P2C, default), `round_robin` (smooth weighted), `random`.
 - **Upstream health**: passive. After N consecutive connect failures an endpoint is ejected with exponential backoff, and connect failures retry on another endpoint.
 - **Upstream pooling**: per-worker keep-alive pools with idle caps and timeouts. Idle connections closed by the upstream are noticed immediately.
+- **TLS termination**: several certificates per listener, chosen by SNI (exact names, then `*.suffix` wildcards, then the first certificate); TLS 1.2 and 1.3; ALPN `http/1.1`; certificates reload with the config, and a broken certificate is rejected while the old one keeps serving.
+- **Upstream TLS**: per-cluster `tls` with SNI, certificate and hostname verification (system CA store or `ca_file`); pooled per cluster.
 
 ## Architecture
 
@@ -63,6 +66,7 @@ worker x N (1 per core)    own io_uring (SINGLE_ISSUER|DEFER_TASKRUN), own
 - **Zero-copy forwarding**: body bytes go from the provided buffer straight into the peer's send queue. The buffer returns to the kernel only when the send that reads it completes (refcounts plus generation checks). When the ring runs low, bytes are copied out so a slow peer cannot starve the worker.
 - **HTTP/1.1**: in-house parser with a resumable head scanner, SIMD (`@Vector`) scanning, comptime byte-class tables and a comptime perfect hash for well-known headers. Strict anti-smuggling rules; requests are re-serialized, never forwarded raw.
 - **TCP/L4**: `splice(2)` through a pipe pair, so bytes never enter userspace; ring-driven readiness; independent half-close per direction.
+- **TLS**: OpenSSL 3 behind a compile-time `TlsBackend` interface. The handshake runs on the socket, driven by ring readiness, with `SSL_OP_ENABLE_KTLS`. When the kernel `tls` module is loaded, the keys go into the socket and the zero-copy plaintext path above carries HTTPS unchanged. Otherwise the connection falls back to userspace TLS, which is allowed only when `"tls": {"require_ktls": false}` and is counted in `tls_userspace`. Only kTLS-capable suites are offered (AES-GCM, ChaCha20-Poly1305).
 - **Config**: immutable snapshots in one arena each, swapped with an atomic pointer; epoch-based reclamation once every worker has moved past.
 - **Memory**: no malloc on the request path. Pools are sized up front, but pages are only committed when first used (RSS is about 5 MB idle).
 

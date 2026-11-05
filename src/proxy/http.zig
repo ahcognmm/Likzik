@@ -34,6 +34,8 @@ const snapshot = @import("../config/snapshot.zig");
 const socket = @import("../net/socket.zig");
 const upool = @import("../upstream/pool.zig");
 const lb = @import("../upstream/lb.zig");
+const tls_backend = @import("../tls/backend.zig");
+const Tls = tls_backend.Tls;
 
 const log = std.log.scoped(.http);
 
@@ -111,6 +113,14 @@ pub const Down = struct {
     resp_keep_alive: bool = false,
     up_poisoned: bool = false,
 
+    // TLS termination.
+    tls: ?*Tls.Conn = null,
+    tls_mode: tls_backend.Mode = .none,
+    tls_poll_in: bool = false,
+    tls_poll_out: bool = false,
+    tls_flushing: bool = false,
+    tls_reading: bool = false,
+
     fn ip(self: *const Down) []const u8 {
         return self.ip_buf[0..self.ip_len];
     }
@@ -144,8 +154,166 @@ pub fn accept(w: *Worker, fd: linux.fd_t, slot: u16) void {
     w.listeners[slot].conns += 1;
     w.stats.inc(.downstream_cx_total);
     w.stats.inc(.downstream_cx_active);
+    // The header timeout also bounds the TLS handshake.
     w.schedule(&d.timer, .down, di, gen(w, di), w.cur.limits.header_timeout_ms);
+    if (w.listenerCfg(slot)) |lcfg| if (lcfg.tls) |srv| {
+        d.tls = Tls.newServerConn(srv.defaultCtx(), fd) orelse return closeDown(w, di);
+        d.tls_mode = .handshake;
+        // The SNI callback reads the snapshot's certificate table: keep the
+        // snapshot alive until the handshake is over.
+        d.snap = w.pinCurrent() orelse return closeDown(w, di);
+        armDownTlsIn(w, di);
+        return;
+    };
     updateDownRecv(w, di);
+}
+
+// ---------------------------------------------------------------- TLS (downstream)
+
+fn armDownTlsIn(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (d.tls_poll_in or d.phase == .closing) return;
+    w.loop.pollMultishot(d.fd, linux.POLL.IN, udOf(w, .d_tls_in, di));
+    d.tls_poll_in = true;
+    d.pending += 1;
+}
+
+fn armDownTlsOut(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (d.tls_poll_out or d.phase == .closing) return;
+    w.loop.pollOnce(d.fd, linux.POLL.OUT, udOf(w, .d_tls_out, di));
+    d.tls_poll_out = true;
+    d.pending += 1;
+}
+
+pub fn onDownTlsEvent(w: *Worker, di: u32, in: bool, cqe: *const linux.io_uring_cqe) void {
+    const d = get(w, di);
+    const more = cqe.flags & linux.IORING_CQE_F_MORE != 0;
+    if (in) {
+        if (!more) {
+            d.tls_poll_in = false;
+            d.pending -= 1;
+        }
+    } else {
+        d.tls_poll_out = false;
+        d.pending -= 1;
+    }
+    defer if (d.phase == .closing and d.pending == 0) w.reapLater(.down, di, gen(w, di));
+    if (d.phase == .closing) return;
+    if (cqe.res < 0) {
+        if (cqe.res == -@as(i32, @intFromEnum(linux.E.CANCELED))) return;
+        return closeDown(w, di);
+    }
+    switch (d.tls_mode) {
+        .handshake => downHandshake(w, di),
+        .user => {
+            if (!in) tlsFlushDown(w, di);
+            tlsReadDown(w, di);
+        },
+        .none, .ktls => {},
+    }
+    if (in and !more and d.phase != .closing and (d.tls_mode == .handshake or d.tls_mode == .user)) armDownTlsIn(w, di);
+}
+
+fn downHandshake(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    w.flush_now = true;
+    switch (Tls.handshake(d.tls.?)) {
+        .n => {},
+        .want_read => return armDownTlsIn(w, di),
+        .want_write => return armDownTlsOut(w, di),
+        .eof, .err => {
+            w.stats.inc(.tls_handshake_errors);
+            return closeDown(w, di);
+        },
+    }
+    w.stats.inc(.tls_handshakes);
+    if (d.snap) |s| {
+        w.unpin(s);
+        d.snap = null;
+    }
+    const off = Tls.ktlsStatus(d.tls.?);
+    if (off.tx and off.rx) {
+        // The socket now carries plaintext: use the zero-copy data path.
+        d.tls_mode = .ktls;
+        w.stats.inc(.tls_ktls);
+        if (d.tls_poll_in) w.loop.cancelUd(udOf(w, .d_tls_in, di));
+        updateDownRecv(w, di);
+    } else {
+        d.tls_mode = .user;
+        w.stats.inc(.tls_userspace);
+        // Application data may already sit decrypted inside OpenSSL.
+        tlsReadDown(w, di);
+    }
+}
+
+/// Userspace TLS: decrypts into blocks and feeds the HTTP state machine.
+pub fn tlsReadDown(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (d.tls_mode != .user or d.tls_reading) return;
+    d.tls_reading = true;
+    defer d.tls_reading = false;
+    while (d.phase != .closing and wantDownRecv(w, d)) {
+        const blk = w.blocks.alloc() orelse return outOfBlocks(w, di);
+        const buf = w.blocks.bytes(blk);
+        switch (Tls.read(d.tls.?, buf)) {
+            .n => |n| {
+                w.stats.add(.bytes_received, n);
+                if (!d.lingering) handleDownData(w, di, .{ .block = blk }, buf[0..n]);
+                w.blocks.unref(blk);
+            },
+            .want_read => {
+                w.blocks.unref(blk);
+                return armDownTlsIn(w, di);
+            },
+            .want_write => {
+                w.blocks.unref(blk);
+                return armDownTlsOut(w, di);
+            },
+            .eof => {
+                w.blocks.unref(blk);
+                return onDownEof(w, di);
+            },
+            .err => {
+                w.blocks.unref(blk);
+                return closeDown(w, di);
+            },
+        }
+    }
+}
+
+fn tlsFlushDown(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (d.tls_flushing or d.tls_poll_out) return;
+    d.tls_flushing = true;
+    defer d.tls_flushing = false;
+    while (d.phase != .closing) {
+        const head = d.out.head orelse return;
+        const seg = w.segs.segs[head];
+        switch (Tls.write(d.tls.?, seg.ptr[0..seg.len])) {
+            .n => |n| downSent(w, di, n),
+            .want_write => return armDownTlsOut(w, di),
+            .want_read => return armDownTlsIn(w, di),
+            .eof, .err => return closeDown(w, di),
+        }
+    }
+}
+
+/// kTLS receive: a non-data record (alert, KeyUpdate, NewSessionTicket)
+/// makes recv fail with EIO; OpenSSL reads it with the record-type cmsg
+/// and processes it. Untested in CI: needs a kernel with the tls module.
+fn ktlsControlDown(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    const blk = w.blocks.alloc() orelse return outOfBlocks(w, di);
+    defer w.blocks.unref(blk);
+    const buf = w.blocks.bytes(blk);
+    switch (Tls.read(d.tls.?, buf)) {
+        .n => |n| handleDownData(w, di, .{ .block = blk }, buf[0..n]),
+        .want_read, .want_write => {},
+        .eof => return onDownEof(w, di),
+        .err => return closeDown(w, di),
+    }
+    if (d.phase != .closing) updateDownRecv(w, di);
 }
 
 // ---------------------------------------------------------------- recv
@@ -172,6 +340,14 @@ fn wantDownRecv(w: *Worker, d: *Down) bool {
 pub fn updateDownRecv(w: *Worker, di: u32) void {
     const d = get(w, di);
     const want = wantDownRecv(w, d);
+    switch (d.tls_mode) {
+        .handshake => return,
+        .user => {
+            if (want and !d.tls_reading) w.tlsKick(.down, di, gen(w, di));
+            return;
+        },
+        .none, .ktls => {},
+    }
     if (want and !d.recv_armed) {
         w.loop.recvMultishot(d.fd, worker_mod.buffer_group, udOf(w, .d_recv, di));
         d.recv_armed = true;
@@ -200,6 +376,7 @@ pub fn onDownRecv(w: *Worker, di: u32, cqe: *const linux.io_uring_cqe) void {
                 w.needRearm(.down, di, gen(w, di));
             },
             .CANCELED => if (d.phase != .closing) updateDownRecv(w, di),
+            .IO, .KEYEXPIRED => if (d.tls_mode == .ktls and d.phase != .closing) ktlsControlDown(w, di) else closeDown(w, di),
             else => closeDown(w, di),
         }
         return;
@@ -214,7 +391,7 @@ pub fn onDownRecv(w: *Worker, di: u32, cqe: *const linux.io_uring_cqe) void {
     };
     const bid = w.bufs.idOf(cqe);
     w.stats.add(.bytes_received, data.len);
-    if (d.phase != .closing and !d.lingering) handleDownData(w, di, bid, data);
+    if (d.phase != .closing and !d.lingering) handleDownData(w, di, .{ .pbuf = bid }, data);
     w.bufs.unref(bid);
     if (!more and d.phase != .closing) updateDownRecv(w, di);
 }
@@ -237,7 +414,7 @@ fn onDownEof(w: *Worker, di: u32) void {
     }
 }
 
-fn handleDownData(w: *Worker, di: u32, bid: u16, data: []const u8) void {
+fn handleDownData(w: *Worker, di: u32, owner: sq.Owner, data: []const u8) void {
     const d = get(w, di);
     const limits = &w.cur.limits;
     var rest = data;
@@ -270,7 +447,7 @@ fn handleDownData(w: *Worker, di: u32, bid: u16, data: []const u8) void {
             },
             .exchange => {
                 if (!d.req.done) {
-                    const n = forwardReqBody(w, di, rest, .{ .pbuf = bid }) orelse return;
+                    const n = forwardReqBody(w, di, rest, owner) orelse return;
                     rest = rest[n..];
                     continue;
                 }
@@ -376,7 +553,7 @@ fn startRequest(w: *Worker, di: u32, head: []const u8) void {
     var out: codec.Out = .{ .buf = w.blocks.bytes(blk) };
     codec.writeRequest(&out, &req, &info, .{
         .client_ip = d.ip(),
-        .proto = "http",
+        .proto = if (d.tls != null) "https" else "http",
         .trusted_client = lcfg.trust_forwarded_headers,
         .target = target,
     }) catch {
@@ -528,21 +705,32 @@ pub fn onUpConnect(w: *Worker, ui: u32, cqe: *const linux.io_uring_cqe) void {
     u.pending -= 1;
     defer if (u.state == .closing and u.pending == 0) w.reapLater(.up, ui, w.ups.gen(ui));
     if (u.state == .closing) return;
-    const di = ownerOf(w, ui);
     if (cqe.res == 0) {
-        u.state = .busy;
-        if (w.eps.get(w.gpa, u.ep_id)) |st| st.recordSuccess() else |_| {}
-        if (di == null) {
-            // Downstream went away while connecting: keep the connection.
-            upool.release(w, ui);
-            return;
-        }
-        upool.flush(w, ui);
-        upool.updateRecv(w, ui);
-        return;
+        if (u.tls != null) return upHandshake(w, ui);
+        return upReady(w, ui);
     }
     const timed_out = cqe.res == -@as(i32, @intFromEnum(linux.E.CANCELED));
     if (timed_out) w.stats.inc(.upstream_cx_connect_timeout);
+    upConnectFailed(w, ui, timed_out);
+}
+
+/// Connected (and TLS established, if configured).
+fn upReady(w: *Worker, ui: u32) void {
+    const u = upool.get(w, ui);
+    u.state = .busy;
+    if (w.eps.get(w.gpa, u.ep_id)) |st| st.recordSuccess() else |_| {}
+    if (ownerOf(w, ui) == null) {
+        // Downstream went away while connecting: keep the connection.
+        upool.release(w, ui);
+        return;
+    }
+    upool.flush(w, ui);
+    upool.updateRecv(w, ui);
+}
+
+fn upConnectFailed(w: *Worker, ui: u32, timed_out: bool) void {
+    const u = upool.get(w, ui);
+    const di = ownerOf(w, ui);
     const ep_id = u.ep_id;
     upool.close(w, ui);
     const d_i = di orelse return;
@@ -558,6 +746,170 @@ pub fn onUpConnect(w: *Worker, ui: u32, cqe: *const linux.io_uring_cqe) void {
     }
 }
 
+// ---------------------------------------------------------------- TLS (upstream)
+
+fn armUpTlsIn(w: *Worker, ui: u32) void {
+    const u = upool.get(w, ui);
+    if (u.tls_poll_in or u.state == .closing) return;
+    w.loop.pollMultishot(u.fd, linux.POLL.IN, upool.udOf(w, .u_tls_in, ui));
+    u.tls_poll_in = true;
+    u.pending += 1;
+}
+
+fn armUpTlsOut(w: *Worker, ui: u32) void {
+    const u = upool.get(w, ui);
+    if (u.tls_poll_out or u.state == .closing) return;
+    w.loop.pollOnce(u.fd, linux.POLL.OUT, upool.udOf(w, .u_tls_out, ui));
+    u.tls_poll_out = true;
+    u.pending += 1;
+}
+
+pub fn onUpTlsEvent(w: *Worker, ui: u32, in: bool, cqe: *const linux.io_uring_cqe) void {
+    const u = upool.get(w, ui);
+    const more = cqe.flags & linux.IORING_CQE_F_MORE != 0;
+    if (in) {
+        if (!more) {
+            u.tls_poll_in = false;
+            u.pending -= 1;
+        }
+    } else {
+        u.tls_poll_out = false;
+        u.pending -= 1;
+    }
+    defer if (u.state == .closing and u.pending == 0) w.reapLater(.up, ui, w.ups.gen(ui));
+    if (u.state == .closing) return;
+    if (cqe.res < 0) {
+        if (cqe.res == -@as(i32, @intFromEnum(linux.E.CANCELED))) return;
+        if (u.tls_mode == .handshake) return upConnectFailed(w, ui, false);
+        const di = ownerOf(w, ui);
+        upool.close(w, ui);
+        if (di) |d_i| upstreamFailed(w, d_i);
+        return;
+    }
+    switch (u.tls_mode) {
+        .handshake => upHandshake(w, ui),
+        .user => {
+            if (!in) tlsFlushUp(w, ui);
+            tlsReadUp(w, ui);
+        },
+        .none, .ktls => {},
+    }
+    if (in and !more and u.state != .closing and (u.tls_mode == .handshake or u.tls_mode == .user)) armUpTlsIn(w, ui);
+}
+
+fn upHandshake(w: *Worker, ui: u32) void {
+    const u = upool.get(w, ui);
+    w.flush_now = true;
+    switch (Tls.handshake(u.tls.?)) {
+        .n => {},
+        .want_read => return armUpTlsIn(w, ui),
+        .want_write => return armUpTlsOut(w, ui),
+        .eof, .err => {
+            w.stats.inc(.upstream_tls_handshake_errors);
+            var ebuf: [160]u8 = undefined;
+            log.warn("upstream TLS handshake failed: {s}", .{Tls.lastError(&ebuf)});
+            return upConnectFailed(w, ui, false);
+        },
+    }
+    w.stats.inc(.upstream_tls_handshakes);
+    const off = Tls.ktlsStatus(u.tls.?);
+    if (off.tx and off.rx) {
+        u.tls_mode = .ktls;
+        w.stats.inc(.tls_ktls);
+        if (u.tls_poll_in) w.loop.cancelUd(upool.udOf(w, .u_tls_in, ui));
+    } else {
+        u.tls_mode = .user;
+        w.stats.inc(.tls_userspace);
+    }
+    upReady(w, ui);
+}
+
+pub fn tlsReadUp(w: *Worker, ui: u32) void {
+    const u = upool.get(w, ui);
+    if (u.tls_mode != .user or u.tls_reading) return;
+    u.tls_reading = true;
+    defer u.tls_reading = false;
+    while (u.state != .closing and upool.wantRecv(w, ui)) {
+        const blk = w.blocks.alloc() orelse {
+            w.stats.inc(.blocks_exhausted);
+            return;
+        };
+        const buf = w.blocks.bytes(blk);
+        switch (Tls.read(u.tls.?, buf)) {
+            .n => |n| {
+                deliverUpData(w, ui, .{ .block = blk }, buf[0..n]);
+                w.blocks.unref(blk);
+            },
+            .want_read => {
+                w.blocks.unref(blk);
+                return armUpTlsIn(w, ui);
+            },
+            .want_write => {
+                w.blocks.unref(blk);
+                return armUpTlsOut(w, ui);
+            },
+            .eof => {
+                w.blocks.unref(blk);
+                return onUpEof(w, ui);
+            },
+            .err => {
+                w.blocks.unref(blk);
+                const di = ownerOf(w, ui);
+                upool.close(w, ui);
+                if (di) |d_i| upstreamFailed(w, d_i);
+                return;
+            },
+        }
+    }
+}
+
+pub fn tlsFlushUp(w: *Worker, ui: u32) void {
+    const u = upool.get(w, ui);
+    if (u.tls_flushing or u.tls_poll_out) return;
+    u.tls_flushing = true;
+    defer u.tls_flushing = false;
+    while (u.state == .busy) {
+        const head = u.out.head orelse return;
+        const seg = w.segs.segs[head];
+        switch (Tls.write(u.tls.?, seg.ptr[0..seg.len])) {
+            .n => |n| upSent(w, ui, n),
+            .want_write => return armUpTlsOut(w, ui),
+            .want_read => return armUpTlsIn(w, ui),
+            .eof, .err => {
+                const di = ownerOf(w, ui);
+                upool.close(w, ui);
+                if (di) |d_i| upstreamFailed(w, d_i);
+                return;
+            },
+        }
+    }
+}
+
+fn ktlsControlUp(w: *Worker, ui: u32) void {
+    const u = upool.get(w, ui);
+    const blk = w.blocks.alloc() orelse return upool.close(w, ui);
+    defer w.blocks.unref(blk);
+    const buf = w.blocks.bytes(blk);
+    switch (Tls.read(u.tls.?, buf)) {
+        .n => |n| deliverUpData(w, ui, .{ .block = blk }, buf[0..n]),
+        .want_read, .want_write => {},
+        .eof => return onUpEof(w, ui),
+        .err => {
+            const di = ownerOf(w, ui);
+            upool.close(w, ui);
+            if (di) |d_i| upstreamFailed(w, d_i);
+            return;
+        },
+    }
+    if (u.state != .closing) upool.updateRecv(w, ui);
+}
+
+fn upSent(w: *Worker, ui: u32, n: usize) void {
+    const u = upool.get(w, ui);
+    u.out.complete(&w.segs, n, w);
+    if (ownerOf(w, ui)) |di| updateDownRecv(w, di);
+}
+
 pub fn onUpSend(w: *Worker, ui: u32, cqe: *const linux.io_uring_cqe) void {
     const u = upool.get(w, ui);
     u.pending -= 1;
@@ -569,10 +921,12 @@ pub fn onUpSend(w: *Worker, ui: u32, cqe: *const linux.io_uring_cqe) void {
         if (di) |d_i| upstreamFailed(w, d_i);
         return;
     }
-    u.out.complete(&w.segs, @intCast(cqe.res), w);
-    if (u.state == .closing) return;
+    if (u.state == .closing) {
+        u.out.complete(&w.segs, @intCast(cqe.res), w);
+        return;
+    }
+    upSent(w, ui, @intCast(cqe.res));
     upool.flush(w, ui);
-    if (ownerOf(w, ui)) |di| updateDownRecv(w, di);
 }
 
 pub fn onUpRecv(w: *Worker, ui: u32, cqe: *const linux.io_uring_cqe) void {
@@ -592,6 +946,11 @@ pub fn onUpRecv(w: *Worker, ui: u32, cqe: *const linux.io_uring_cqe) void {
                 w.needRearm(.up, ui, w.ups.gen(ui));
             },
             .CANCELED => if (u.state != .closing) upool.updateRecv(w, ui),
+            .IO, .KEYEXPIRED => if (u.tls_mode == .ktls and u.state != .closing) ktlsControlUp(w, ui) else {
+                const di = ownerOf(w, ui);
+                upool.close(w, ui);
+                if (di) |d_i| upstreamFailed(w, d_i);
+            },
             else => {
                 const di = ownerOf(w, ui);
                 upool.close(w, ui);
@@ -610,6 +969,12 @@ pub fn onUpRecv(w: *Worker, ui: u32, cqe: *const linux.io_uring_cqe) void {
     };
     const bid = w.bufs.idOf(cqe);
     defer w.bufs.unref(bid);
+    deliverUpData(w, ui, .{ .pbuf = bid }, data);
+    if (!more and u.state != .closing) upool.updateRecv(w, ui);
+}
+
+fn deliverUpData(w: *Worker, ui: u32, owner: sq.Owner, data: []const u8) void {
+    const u = upool.get(w, ui);
     if (u.state == .closing) return;
     const di = ownerOf(w, ui) orelse {
         // Bytes on an idle connection: the upstream is broken.
@@ -617,11 +982,10 @@ pub fn onUpRecv(w: *Worker, ui: u32, cqe: *const linux.io_uring_cqe) void {
         upool.close(w, ui);
         return;
     };
-    handleUpData(w, di, ui, bid, data);
-    if (!more and u.state != .closing) upool.updateRecv(w, ui);
+    handleUpData(w, di, ui, owner, data);
 }
 
-fn handleUpData(w: *Worker, di: u32, ui: u32, bid: u16, data: []const u8) void {
+fn handleUpData(w: *Worker, di: u32, ui: u32, owner: sq.Owner, data: []const u8) void {
     const d = get(w, di);
     const u = upool.get(w, ui);
     d.resp_bytes_seen = true;
@@ -665,7 +1029,7 @@ fn handleUpData(w: *Worker, di: u32, ui: u32, bid: u16, data: []const u8) void {
             d.up_poisoned = true;
             break;
         }
-        const n = forwardRespBody(w, di, rest, .{ .pbuf = bid }) orelse return;
+        const n = forwardRespBody(w, di, rest, owner) orelse return;
         rest = rest[n..];
     }
     if (d.phase == .exchange and d.up != null and d.up.? == ui and d.resp_head_done and d.resp.done) {
@@ -952,6 +1316,11 @@ fn localError(w: *Worker, di: u32, status: u16, close: bool) void {
 fn flushDown(w: *Worker, di: u32) void {
     const d = get(w, di);
     if (d.phase == .closing or d.out.inflight or d.out.isEmpty()) return;
+    switch (d.tls_mode) {
+        .user => return tlsFlushDown(w, di),
+        .handshake => return,
+        .none, .ktls => {},
+    }
     const msg = d.out.prepare(&w.segs);
     w.loop.sendmsg(d.fd, msg, udOf(w, .d_send, di));
     d.pending += 1;
@@ -966,9 +1335,15 @@ pub fn onDownSend(w: *Worker, di: u32, cqe: *const linux.io_uring_cqe) void {
         closeDown(w, di);
         return;
     }
+    downSent(w, di, @intCast(cqe.res));
+}
+
+/// `n` bytes of the send queue reached the socket (or OpenSSL).
+fn downSent(w: *Worker, di: u32, n: usize) void {
+    const d = get(w, di);
     const was_full = d.out.bytes > high_water;
-    d.out.complete(&w.segs, @intCast(cqe.res), w);
-    w.stats.add(.bytes_sent, @intCast(cqe.res));
+    d.out.complete(&w.segs, n, w);
+    w.stats.add(.bytes_sent, n);
     if (d.phase == .closing) return;
     if (!d.out.isEmpty()) {
         flushDown(w, di);
@@ -986,6 +1361,7 @@ fn beginLinger(w: *Worker, di: u32) void {
     const d = get(w, di);
     if (d.lingering or d.phase == .closing) return;
     d.lingering = true;
+    if (d.tls) |t| if (d.tls_mode == .user or d.tls_mode == .ktls) Tls.shutdown(t);
     socket.shutdownWrite(d.fd);
     if (d.peer_eof) {
         closeDown(w, di);
@@ -1020,6 +1396,7 @@ pub fn maybeFreeDown(w: *Worker, di: u32) void {
     if (d.phase != .closing or d.pending > 0) return;
     d.out.clear(&w.segs, w);
     d.in.release(&w.blocks);
+    if (d.tls) |t| Tls.freeConn(t);
     socket.closeFd(d.fd);
     w.listeners[d.listener].conns -= 1;
     w.downs.release(di);
@@ -1031,6 +1408,7 @@ pub fn onDownTimer(w: *Worker, di: u32) void {
     switch (d.phase) {
         .closing => {},
         .head => {
+            if (d.tls_mode == .handshake) return closeDown(w, di); // handshake timeout
             if (d.lingering or d.close_after_flush) return closeDown(w, di);
             if (d.in.isEmpty() and d.scanner.pos == 0) return closeDown(w, di); // keep-alive idle
             localError(w, di, 408, true);

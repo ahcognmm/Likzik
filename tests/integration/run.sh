@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end tests: real likzik binary, nginx + a Python echo server as
-# upstreams. Needs: nginx, curl, nc, python3. Run from the repo root:
+# upstreams. Needs: nginx, curl, nc, python3, openssl. Run from the repo root:
 #
 #   zig build -Doptimize=ReleaseSafe && tests/integration/run.sh
 #   LIKZIK=path/to/likzik tests/integration/run.sh   (e.g. a Debug build)
@@ -25,6 +25,18 @@ trap cleanup EXIT
 
 head -c 3000000 /dev/urandom > "$WWW/big.bin"; chmod 644 "$WWW/big.bin"
 BIG_MD5=$(md5sum < "$WWW/big.bin")
+export NO_PROXY='*' no_proxy='*'
+
+# Test PKI: a CA, two server certificates (SNI), one upstream certificate.
+PKI=$WORK/pki; mkdir -p "$PKI"; chmod 755 "$PKI"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$PKI/ca.key" -out "$PKI/ca.crt" -days 2 -subj "/CN=it CA" 2>/dev/null
+mkcert() {
+  openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$PKI/$1.key" -out "$PKI/$1.csr" -subj "/CN=$2" 2>/dev/null
+  printf "subjectAltName=%s\n" "$3" > "$PKI/$1.ext"
+  openssl x509 -req -in "$PKI/$1.csr" -CA "$PKI/ca.crt" -CAkey "$PKI/ca.key" -CAcreateserial -out "$PKI/$1.crt" -days 2 -extfile "$PKI/$1.ext" 2>/dev/null
+}
+mkcert a a.test "DNS:a.test,DNS:*.wild.test"; mkcert b b.test "DNS:b.test"; mkcert up upstream.test "DNS:upstream.test"
+chmod 644 "$PKI"/*
 
 cat > "$WORK/up.conf" <<NGX
 worker_processes 1; daemon on; pid $WORK/up.pid; error_log $WORK/up_error.log;
@@ -34,6 +46,8 @@ http { access_log off;
   uwsgi_temp_path $WORK/uwsgi; scgi_temp_path $WORK/scgi;
   server { listen 127.0.0.1:19001; root $WWW; location = / { return 200 "a\n"; } location = /slow { return 200 "a\n"; } }
   server { listen 127.0.0.1:19002; root $WWW; location = / { return 200 "b\n"; } }
+  server { listen 127.0.0.1:19004 ssl; ssl_certificate $PKI/up.crt; ssl_certificate_key $PKI/up.key;
+           root $WWW; location = / { return 200 "tls upstream\n"; } }
 }
 NGX
 nginx -c "$WORK/up.conf" -p "$WORK" || { echo "nginx failed"; exit 1; }
@@ -41,20 +55,29 @@ python3 "$ROOT/tests/integration/echo_server.py" 19003 >/dev/null 2>&1 & EPID=$!
 
 cat > "$WORK/likzik.json" <<JSON
 { "version": "it-1", "workers": 2, "admin": { "address": "127.0.0.1:19901" },
+  "tls": { "require_ktls": false },
   "limits": { "header_timeout_ms": 1000 },
   "listeners": [
     { "name": "web", "address": "127.0.0.1:18080", "route_config": "main" },
-    { "name": "tcp", "address": "127.0.0.1:18443", "protocol": "tcp", "cluster": "web" } ],
+    { "name": "tcp", "address": "127.0.0.1:18443", "protocol": "tcp", "cluster": "web" },
+    { "name": "https", "address": "127.0.0.1:18444", "route_config": "main",
+      "tls": { "certificates": [
+        { "certificate_chain": "$PKI/a.crt", "private_key": "$PKI/a.key", "server_names": ["a.test", "*.wild.test"] },
+        { "certificate_chain": "$PKI/b.crt", "private_key": "$PKI/b.key", "server_names": ["b.test"] } ] } } ],
   "route_configs": [ { "name": "main", "virtual_hosts": [
     { "name": "echo", "domains": ["echo.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "echo" } } ] },
     { "name": "api", "domains": ["api.test", "*.api.test"], "routes": [
       { "match": { "prefix": "/v1/", "methods": ["GET"] }, "route": { "cluster": "echo", "prefix_rewrite": "/" } } ] },
     { "name": "dead", "domains": ["dead.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "dead" } } ] },
+    { "name": "tlsup", "domains": ["tlsup.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "tlsup" } } ] },
+    { "name": "badtls", "domains": ["badtls.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "badtls" } } ] },
     { "name": "default", "domains": ["*"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "web" } } ] } ] } ],
   "clusters": [
     { "name": "web", "lb_policy": "round_robin", "endpoints": [ { "address": "127.0.0.1:19001" }, { "address": "127.0.0.1:19002" } ] },
     { "name": "echo", "endpoints": [ { "address": "127.0.0.1:19003" } ] },
-    { "name": "dead", "connect_timeout_ms": 300, "endpoints": [ { "address": "127.0.0.1:1" } ] } ] }
+    { "name": "dead", "connect_timeout_ms": 300, "endpoints": [ { "address": "127.0.0.1:1" } ] },
+    { "name": "tlsup", "tls": { "sni": "upstream.test", "ca_file": "$PKI/ca.crt" }, "endpoints": [ { "address": "127.0.0.1:19004" } ] },
+    { "name": "badtls", "tls": { "sni": "wrong.test", "ca_file": "$PKI/ca.crt" }, "endpoints": [ { "address": "127.0.0.1:19004" } ] } ] }
 JSON
 
 "$LIKZIK" -c "$WORK/likzik.json" --check >/dev/null 2>&1 && ok "--check accepts the config" || bad "--check"
@@ -111,6 +134,33 @@ check "head timeout -> 408" "$( (printf 'GET / HTTP/1.1\r\nHost: a\r\n'; sleep 2
 echo "tcp proxy"
 check "tcp passthrough" "$(curl -s 127.0.0.1:18443/ | grep -cE '^(a|b)$')" "1"
 check "tcp 3MB intact" "$(curl -s 127.0.0.1:18443/big.bin | md5sum)" "$BIG_MD5"
+
+echo "tls"
+S() { curl -s --cacert "$PKI/ca.crt" --resolve "$1:18444:127.0.0.1" "${@:3}" "https://$1:18444$2"; }
+certcn() { echo | openssl s_client -connect 127.0.0.1:18444 -servername "$1" 2>/dev/null | openssl x509 -noout -subject | sed 's/.*CN *= *//'; }
+fp() { echo | openssl s_client -connect 127.0.0.1:18444 -servername a.test 2>/dev/null | openssl x509 -noout -fingerprint; }
+code200() { S "$@" -o /dev/null -w '%{http_code}'; }
+check "https termination" "$(code200 a.test /)" "200"
+check "SNI selects certificate b" "$(certcn b.test)" "b.test"
+check "SNI wildcard -> certificate a" "$(certcn x.wild.test)" "a.test"
+check "unknown SNI -> default certificate" "$(certcn other.test)" "a.test"
+check "TLS 1.2" "$(code200 a.test / --tlsv1.2 --tls-max 1.2)" "200"
+check "ALPN http/1.1" "$(S a.test / -v -o /dev/null 2>&1 | grep -c 'server accepted http/1.1')" "1"
+check "X-Forwarded-Proto https" "$(S a.test /h -H 'Host: echo.test' | grep -i '^X-Forwarded-Proto' | tr -d '\r')" "X-Forwarded-Proto: https"
+check "3MB over https intact" "$(S a.test /big.bin | md5sum)" "$BIG_MD5"
+check "270KB upload over https" "$(S a.test /u -H 'Host: echo.test' --data-binary @"$WORK/up.txt" | grep -ao 'BODY:.*' | md5sum)" "$( (printf 'BODY:'; cat "$WORK/up.txt"; echo) | md5sum)"
+check "upstream TLS, verified" "$(S a.test / -H 'Host: tlsup.test')" "tls upstream"
+check "3MB via TLS upstream intact" "$(S a.test /big.bin -H 'Host: tlsup.test' | md5sum)" "$BIG_MD5"
+check "upstream cert name mismatch -> 503" "$(S a.test / -H 'Host: badtls.test' -o /dev/null -w '%{http_code}')" "503"
+check "plaintext on TLS port is dropped" "$(printf 'GET / HTTP/1.1\r\nHost: a\r\n\r\n' | timeout 3 nc 127.0.0.1 18444 | head -c 4)" ""
+mkcert a a.test "DNS:a.test,DNS:*.wild.test"; chmod 644 "$PKI"/*
+kill -HUP "$LPID"; sleep 0.5
+check "certificate hot reload on SIGHUP" "$(fp)" "$(openssl x509 -in "$PKI/a.crt" -noout -fingerprint)"
+cp "$PKI/a.crt" "$PKI/a.crt.good"; echo junk > "$PKI/a.crt"
+check "broken certificate rejected on reload" "$(curl -s -o /dev/null -w '%{http_code}' -X POST 127.0.0.1:19901/reload)" "400"
+check "old certificate keeps serving" "$(code200 a.test /)" "200"
+cp "$PKI/a.crt.good" "$PKI/a.crt"
+check "tls metrics" "$(curl -s 127.0.0.1:19901/metrics | grep -c '^likzik_tls_handshakes_total ')" "1"
 
 echo "config reload"
 cp "$WORK/likzik.json" "$WORK/good.json"

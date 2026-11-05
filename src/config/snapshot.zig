@@ -7,6 +7,7 @@ const model = @import("model.zig");
 const validate_mod = @import("validate.zig");
 const Address = @import("../net/addr.zig").Address;
 const Method = @import("../http1/parser.zig").Method;
+const Tls = @import("../tls/backend.zig").Tls;
 
 pub const Diag = validate_mod.Diag;
 
@@ -31,6 +32,13 @@ pub const Cluster = struct {
     eject_ms: u32,
     endpoints: []Endpoint,
     total_weight: u32,
+    tls: ?ClientTls,
+};
+
+pub const ClientTls = struct {
+    ctx: *Tls.Ctx,
+    sni: ?[]const u8,
+    verify: bool,
 };
 
 pub const MatchKind = enum { prefix, exact };
@@ -114,6 +122,7 @@ pub const Listener = struct {
     cluster: ?*Cluster,
     trust_forwarded_headers: bool,
     idle_timeout_ms: u32,
+    tls: ?*Tls.Server,
 };
 
 pub const Snapshot = struct {
@@ -126,8 +135,12 @@ pub const Snapshot = struct {
     listeners: []Listener,
     route_tables: []RouteTable,
     clusters: []Cluster,
+    require_ktls: bool,
+    /// True when any listener or cluster uses TLS.
+    uses_tls: bool,
 
     pub fn destroy(self: *Snapshot) void {
+        freeTls(self.listeners, self.clusters);
         var a = self.arena;
         a.deinit();
     }
@@ -176,6 +189,19 @@ pub const Registry = struct {
     }
 };
 
+/// SSL_CTXs are reference counted by OpenSSL: connections that started on
+/// this snapshot keep theirs alive after the snapshot is freed.
+fn freeTls(listeners: []Listener, clusters: []Cluster) void {
+    for (listeners) |*l| if (l.tls) |t| {
+        t.deinit();
+        l.tls = null;
+    };
+    for (clusters) |*c| if (c.tls) |t| {
+        Tls.freeCtx(t.ctx);
+        c.tls = null;
+    };
+}
+
 /// Validates `cfg` and compiles it into a new Snapshot. `cfg` may be freed
 /// afterwards; everything is copied into the snapshot's arena.
 pub fn build(gpa: std.mem.Allocator, cfg: *const model.Config, reg: *Registry, diag: *Diag) !*Snapshot {
@@ -208,8 +234,17 @@ pub fn build(gpa: std.mem.Allocator, cfg: *const model.Config, reg: *Registry, d
             .eject_ms = src.eject_ms,
             .endpoints = eps,
             .total_weight = total,
+            .tls = null,
         };
     }
+    var listeners_built: []Listener = &.{};
+    errdefer freeTls(listeners_built, clusters);
+    for (cfg.clusters, clusters) |src, *dst| if (src.tls) |t| {
+        var td: Tls.Diag = .{};
+        const ctx = Tls.newClient(.{ .verify = t.verify, .ca_file = t.ca_file }, &td) catch
+            return diag.set("cluster '{s}': {s}", .{ src.name, td.message() });
+        dst.tls = .{ .ctx = ctx, .sni = if (t.sni) |n| try a.dupe(u8, n) else null, .verify = t.verify };
+    };
 
     const findC = struct {
         fn f(cs: []Cluster, name: []const u8) *Cluster {
@@ -255,6 +290,8 @@ pub fn build(gpa: std.mem.Allocator, cfg: *const model.Config, reg: *Registry, d
     }
 
     const listeners = try a.alloc(Listener, cfg.listeners.len);
+    for (listeners) |*l| l.tls = null;
+    listeners_built = listeners;
     for (cfg.listeners, listeners) |src, *dst| {
         var rt: ?*RouteTable = null;
         if (src.route_config) |name| {
@@ -270,8 +307,25 @@ pub fn build(gpa: std.mem.Allocator, cfg: *const model.Config, reg: *Registry, d
             .cluster = if (src.cluster) |c| findC(clusters, c) else null,
             .trust_forwarded_headers = src.trust_forwarded_headers,
             .idle_timeout_ms = src.idle_timeout_ms,
+            .tls = null,
         };
+        if (src.tls) |t| {
+            const specs = try a.alloc(Tls.CertSpec, t.certificates.len);
+            for (t.certificates, specs) |cert, *sp| sp.* = .{ .certificate_chain = cert.certificate_chain, .private_key = cert.private_key, .server_names = cert.server_names };
+            var td: Tls.Diag = .{};
+            dst.tls = Tls.newServer(a, specs, &td) catch |e| {
+                if (e == error.OutOfMemory) return e;
+                return diag.set("listener '{s}': {s}", .{ src.name, td.message() });
+            };
+        }
     }
+    var uses_tls = false;
+    for (listeners) |l| if (l.tls != null) {
+        uses_tls = true;
+    };
+    for (clusters) |cl| if (cl.tls != null) {
+        uses_tls = true;
+    };
 
     const snap = try a.create(Snapshot);
     snap.* = .{
@@ -283,6 +337,8 @@ pub fn build(gpa: std.mem.Allocator, cfg: *const model.Config, reg: *Registry, d
         .listeners = listeners,
         .route_tables = tables,
         .clusters = clusters,
+        .require_ktls = cfg.tls.require_ktls,
+        .uses_tls = uses_tls,
     };
     // Move the arena into the snapshot last, after all allocations.
     snap.arena = arena;

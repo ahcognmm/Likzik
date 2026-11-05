@@ -5,6 +5,7 @@
 const std = @import("std");
 const linux = std.os.linux;
 const file_watch = @import("../config/sources/file_watch.zig");
+const ktls = @import("../tls/ktls.zig");
 
 const log = std.log.scoped(.startup);
 
@@ -28,7 +29,9 @@ fn readSmall(gpa: std.mem.Allocator, path: []const u8) ?[]u8 {
 pub const Options = struct {
     /// Allow kernels older than `min_kernel` (development only).
     allow_old_kernel: bool = false,
-    /// TLS listeners are configured: require the kernel tls module.
+    /// TLS is configured somewhere.
+    uses_tls: bool = false,
+    /// ... and the config requires kTLS (fail when it is unavailable).
     need_ktls: bool = false,
 };
 
@@ -64,8 +67,12 @@ pub fn run(gpa: std.mem.Allocator, opts: Options) !void {
     };
     ring.deinit();
 
-    if (opts.need_ktls) {
-        if (readSmall(gpa, "/proc/net/tls_stat")) |s| gpa.free(s) else return fail("kernel TLS (the 'tls' module) is not loaded: /proc/net/tls_stat is missing. Run 'modprobe tls'.", .{});
+    if (opts.uses_tls) {
+        if (!ktls.available()) {
+            if (opts.need_ktls)
+                return fail("kernel TLS (the 'tls' module) is not loaded: /proc/net/tls_stat is missing. Run 'modprobe tls', or set \"tls\": {{\"require_ktls\": false}} to allow the slower userspace fallback.", .{});
+            log.warn("kernel TLS is unavailable: TLS runs in userspace (slower). Load the 'tls' module for kTLS.", .{});
+        }
     }
 
     raiseNofile();

@@ -18,6 +18,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     lib.addImport("build_options", options_mod);
+    // TLS: OpenSSL 3.x from the system (built with kTLS support).
+    lib.link_libc = true;
+    lib.linkSystemLibrary("ssl", .{});
+    lib.linkSystemLibrary("crypto", .{});
 
     const exe = b.addExecutable(.{
         .name = "likzik",

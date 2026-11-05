@@ -15,6 +15,7 @@ pub const Config = struct {
     workers: u16 = 0,
     admin: ?Admin = null,
     limits: Limits = .{},
+    tls: TlsSettings = .{},
     listeners: []const Listener,
     route_configs: []const RouteConfig = &.{},
     clusters: []const Cluster = &.{},
@@ -54,9 +55,33 @@ pub const Listener = struct {
     tls: ?Tls = null,
 };
 
+pub const TlsSettings = struct {
+    /// Refuse to start TLS listeners or upstreams unless the kernel `tls`
+    /// module is loaded. With false, TLS runs in userspace when kTLS is
+    /// unavailable (slower; counted by the tls_userspace metric).
+    require_ktls: bool = true,
+};
+
+/// Downstream TLS termination.
 pub const Tls = struct {
+    /// The first certificate is the default; others are chosen by SNI.
+    certificates: []const Certificate,
+};
+
+pub const Certificate = struct {
     certificate_chain: []const u8,
     private_key: []const u8,
+    /// SNI names this certificate serves ("example.com", "*.example.com").
+    server_names: []const []const u8 = &.{},
+};
+
+/// TLS to the upstream.
+pub const UpstreamTls = struct {
+    /// Server name sent in SNI and checked against the certificate.
+    sni: ?[]const u8 = null,
+    verify: bool = true,
+    /// CA bundle (PEM). Default: the system store.
+    ca_file: ?[]const u8 = null,
 };
 
 pub const RouteConfig = struct {
@@ -103,6 +128,7 @@ pub const Cluster = struct {
     /// Consecutive connect failures before an endpoint is ejected.
     eject_after_failures: u8 = 3,
     eject_ms: u32 = 10_000,
+    tls: ?UpstreamTls = null,
     endpoints: []const Endpoint,
 };
 

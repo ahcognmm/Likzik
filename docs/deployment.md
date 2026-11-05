@@ -20,6 +20,25 @@ echo 'kernel.io_uring_disabled = 0' > /etc/sysctl.d/90-likzik.conf
 sysctl --system
 ```
 
+## Kernel TLS
+
+HTTPS is designed to run on kTLS. Load the module and make it persistent:
+
+```sh
+modprobe tls
+echo tls > /etc/modules-load.d/tls.conf
+```
+
+With `"tls": {"require_ktls": true}` (the default), likzik refuses to start,
+or to apply a config, that uses TLS while `/proc/net/tls_stat` is missing.
+Set it to `false` to allow the userspace fallback, which is slower. Watch
+`likzik_tls_ktls_total` against `likzik_tls_userspace_total` in production:
+a rising userspace share means kTLS is not engaging (check the module, the
+OpenSSL build and the negotiated cipher).
+
+OpenSSL must be built with kTLS (Ubuntu and Debian packages are; when
+building from source, configure with `enable-ktls`).
+
 ## Containers (Docker, containerd, Kubernetes)
 
 Docker's and containerd's default seccomp profiles block `io_uring_setup`,

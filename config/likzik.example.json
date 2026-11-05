@@ -1,7 +1,9 @@
 {
   "version": "example-1",
   "workers": 0,
-  "admin": { "address": "127.0.0.1:9901" },
+  "admin": {
+    "address": "127.0.0.1:9901"
+  },
   "limits": {
     "max_head_bytes": 16384,
     "header_timeout_ms": 30000,
@@ -11,8 +13,42 @@
     "drain_timeout_ms": 10000
   },
   "listeners": [
-    { "name": "http", "address": "0.0.0.0:8080", "route_config": "main" },
-    { "name": "postgres", "address": "0.0.0.0:5433", "protocol": "tcp", "cluster": "pg", "idle_timeout_ms": 600000 }
+    {
+      "name": "http",
+      "address": "0.0.0.0:8080",
+      "route_config": "main"
+    },
+    {
+      "name": "https",
+      "address": "0.0.0.0:8443",
+      "route_config": "main",
+      "tls": {
+        "certificates": [
+          {
+            "certificate_chain": "/etc/likzik/certs/example.com.fullchain.pem",
+            "private_key": "/etc/likzik/certs/example.com.key",
+            "server_names": [
+              "example.com",
+              "*.example.com"
+            ]
+          },
+          {
+            "certificate_chain": "/etc/likzik/certs/api.example.com.fullchain.pem",
+            "private_key": "/etc/likzik/certs/api.example.com.key",
+            "server_names": [
+              "api.example.com"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "postgres",
+      "address": "0.0.0.0:5433",
+      "protocol": "tcp",
+      "cluster": "pg",
+      "idle_timeout_ms": 600000
+    }
   ],
   "route_configs": [
     {
@@ -20,17 +56,50 @@
       "virtual_hosts": [
         {
           "name": "api",
-          "domains": ["api.example.com", "*.api.example.com"],
+          "domains": [
+            "api.example.com",
+            "*.api.example.com"
+          ],
           "routes": [
-            { "match": { "prefix": "/v1/", "methods": ["GET", "POST"] },
-              "route": { "cluster": "api", "prefix_rewrite": "/", "timeout_ms": 15000 } },
-            { "match": { "path": "/health" }, "route": { "cluster": "api" } }
+            {
+              "match": {
+                "prefix": "/v1/",
+                "methods": [
+                  "GET",
+                  "POST"
+                ]
+              },
+              "route": {
+                "cluster": "api",
+                "prefix_rewrite": "/",
+                "timeout_ms": 15000
+              }
+            },
+            {
+              "match": {
+                "path": "/health"
+              },
+              "route": {
+                "cluster": "api"
+              }
+            }
           ]
         },
         {
           "name": "default",
-          "domains": ["*"],
-          "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "web" } } ]
+          "domains": [
+            "*"
+          ],
+          "routes": [
+            {
+              "match": {
+                "prefix": "/"
+              },
+              "route": {
+                "cluster": "web"
+              }
+            }
+          ]
         }
       ]
     }
@@ -46,18 +115,41 @@
       "eject_after_failures": 3,
       "eject_ms": 10000,
       "endpoints": [
-        { "address": "10.0.1.10:8000", "weight": 2 },
-        { "address": "10.0.1.11:8000" }
-      ]
+        {
+          "address": "10.0.1.10:8000",
+          "weight": 2
+        },
+        {
+          "address": "10.0.1.11:8000"
+        }
+      ],
+      "tls": {
+        "sni": "api.internal.example.com",
+        "verify": true
+      }
     },
     {
       "name": "web",
       "lb_policy": "round_robin",
-      "endpoints": [ { "address": "10.0.2.10:80" }, { "address": "10.0.2.11:80" } ]
+      "endpoints": [
+        {
+          "address": "10.0.2.10:80"
+        },
+        {
+          "address": "10.0.2.11:80"
+        }
+      ]
     },
     {
       "name": "pg",
-      "endpoints": [ { "address": "10.0.3.10:5432" } ]
+      "endpoints": [
+        {
+          "address": "10.0.3.10:5432"
+        }
+      ]
     }
-  ]
+  ],
+  "tls": {
+    "require_ktls": true
+  }
 }
