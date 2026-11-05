@@ -22,7 +22,7 @@ pub const Class = packed struct(u8) {
 };
 
 pub const table: [256]Class = blk: {
-    var t: [256]Class = [_]Class{.{}} ** 256;
+    var t: [256]Class = @splat(.{});
     for (0..256) |i| {
         const c: u8 = @intCast(i);
         var cl: Class = .{};

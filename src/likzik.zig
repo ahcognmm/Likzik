@@ -23,7 +23,7 @@ pub const config = struct {
 
 test {
     inline for (.{ http1, net, config, mem, runtime, upstream, tls, proxy, l4, control, observe }) |ns| {
-        inline for (@typeInfo(ns).@"struct".decls) |d| _ = @field(ns, d.name);
+        inline for (@typeInfo(ns).@"struct".decl_names) |name| _ = @field(ns, name);
     }
     _ = rcu;
 }

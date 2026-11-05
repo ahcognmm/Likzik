@@ -14,7 +14,7 @@ Legend: **done**, **partial**, **not started**.
 | OpenSSL 3 with full kTLS | done, kTLS path untested here | See TLS below. |
 | Thread-per-core, shared-nothing, SO_REUSEPORT per worker | done | Workers pinned to CPUs (`--no-pin` to disable). |
 | Immutable snapshots swapped RCU-style | done | `config/rcu.zig`, epoch-based reclamation. |
-| Zig 0.16.x, `std.os.linux.IoUring` directly | done | The core uses only `std.os.linux` and `std.mem`, not `std.Io`. |
+| Zig pinned, `std.os.linux.IoUring` directly | done | Pinned to 0.17.x (upgraded from 0.16.0; the plan named 0.16.x). The core uses only `std.os.linux` and `std.mem`, not `std.Io`. |
 
 ## Requirements (day one)
 
@@ -75,7 +75,7 @@ Legend: **done**, **partial**, **not started**.
 | Zero-copy header slices, max 100, 431 above | done | |
 | Comptime tables, perfect hash, `@Vector` scanning | done | |
 | Snapshot arena, freed after all workers pass | done | |
-| DebugAllocator / ASan / fuzzer in CI | partial | Tests run under Debug safety checks. Zig 0.16.0's `-ffuzz` test runner fails to compile (std bug), so a built-in mutation fuzzer drives the same properties (`zig build fuzz -Dfuzz-iters=N`). No CI configured yet. |
+| DebugAllocator / ASan / fuzzer in CI | partial | Tests run under debug-mode safety checks. Zig's coverage-guided fuzzer is not usable yet (0.16.0: the test runner fails to compile; 0.17.0: it runs but aborts with "corrupted coverage file: pcs_len was zero"), so a built-in mutation fuzzer drives the same properties (`zig build fuzz -Dfuzz-iters=N`). No CI configured yet. |
 
 ## HTTP/1.1
 

@@ -75,7 +75,7 @@ fn parseIp4(s: []const u8) !u32 {
 }
 
 fn parseIp6(s: []const u8) ![16]u8 {
-    var groups: [8]u16 = [_]u16{0} ** 8;
+    var groups: [8]u16 = @splat(0);
     var head: [8]u16 = undefined;
     var tail: [8]u16 = undefined;
     var nh: usize = 0;

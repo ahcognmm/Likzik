@@ -4,12 +4,13 @@ const std = @import("std");
 const stats = @import("stats.zig");
 
 pub fn write(out: *std.ArrayList(u8), gpa: std.mem.Allocator, all: []const stats.WorkerStats) !void {
-    inline for (@typeInfo(stats.Counter).@"enum".fields) |f| {
-        const c: stats.Counter = @enumFromInt(f.value);
+    const info = @typeInfo(stats.Counter).@"enum";
+    inline for (info.field_names, info.field_values) |fname, value| {
+        const c: stats.Counter = @enumFromInt(value);
         if (c == .snapshot_generation) continue;
         const kind = if (stats.isGauge(c)) "gauge" else "counter";
-        const suffix = if (stats.isGauge(c) or comptime std.mem.endsWith(u8, f.name, "_total")) "" else "_total";
-        try out.print(gpa, "# TYPE likzik_{s}{s} {s}\nlikzik_{s}{s} {d}\n", .{ f.name, suffix, kind, f.name, suffix, stats.sum(all, c) });
+        const suffix = if (stats.isGauge(c) or comptime std.mem.endsWith(u8, fname, "_total")) "" else "_total";
+        try out.print(gpa, "# TYPE likzik_{s}{s} {s}\nlikzik_{s}{s} {d}\n", .{ fname, suffix, kind, fname, suffix, stats.sum(all, c) });
     }
     try out.appendSlice(gpa, "# TYPE likzik_worker_snapshot_generation gauge\n");
     for (all, 0..) |*w, i| {

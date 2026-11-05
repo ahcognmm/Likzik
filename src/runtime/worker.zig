@@ -81,7 +81,7 @@ pub const Worker = struct {
     downs: Pool(http.Down),
     ups: Pool(upool.Up),
     tunnels: Pool(tcp.Tunnel),
-    listeners: [max_listeners]WListener = [_]WListener{.{}} ** max_listeners,
+    listeners: [max_listeners]WListener = @splat(.{}),
     cur: *snapshot.Snapshot,
     pins: rcu_mod.Pins = .{},
     eps: health.Table = .{},

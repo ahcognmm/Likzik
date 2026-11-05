@@ -3,7 +3,7 @@
 # upstreams, same worker count. Needs nginx and wrk; uses wrk2 (fixed-rate,
 # latency-corrected) when it is on PATH.
 #
-#   zig build -Doptimize=ReleaseFast
+#   zig build -Doptimize=fast
 #   bench/vs_nginx.sh [workers] [duration_s] [connections]
 #
 # This is the quick, single-host harness. For numbers worth publishing,

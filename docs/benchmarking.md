@@ -6,9 +6,9 @@ same core count.
 ## Quick, single host
 
 ```sh
-zig build -Doptimize=ReleaseFast
+zig build -Doptimize=fast
 bench/vs_nginx.sh [workers=2] [seconds=10] [connections=64]
-zig build bench-parse -Doptimize=ReleaseFast   # parser throughput
+zig build bench-parse -Doptimize=fast   # parser throughput
 ```
 
 The script runs keep-alive, new-connection, 1 MiB body and TCP passthrough
@@ -18,7 +18,7 @@ off, same worker count). It uses wrk2 when available, otherwise wrk.
 
 Single-host numbers are only a smoke test: the load generator, both proxies
 and the upstream share CPUs. Example from the development VM (4 vCPUs,
-Linux 6.18, 2 workers each, 64 connections, wrk, ReleaseFast):
+Linux 6.18, 2 workers each, 64 connections, wrk, `-Doptimize=fast`):
 
 | workload | likzik req/s | nginx req/s | likzik p99 | nginx p99 |
 | --- | ---: | ---: | ---: | ---: |

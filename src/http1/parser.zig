@@ -59,8 +59,9 @@ pub const Method = enum {
     other,
 
     pub fn parse(s: []const u8) Method {
-        inline for (@typeInfo(Method).@"enum".fields) |f| {
-            if (std.mem.eql(u8, s, f.name)) return @enumFromInt(f.value);
+        const info = @typeInfo(Method).@"enum";
+        inline for (info.field_names, info.field_values) |fname, value| {
+            if (std.mem.eql(u8, s, fname)) return @enumFromInt(value);
         }
         return .other;
     }

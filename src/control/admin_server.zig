@@ -74,8 +74,9 @@ fn handle(c: *Control, method: []const u8, path: []const u8, body: *std.ArrayLis
             try body.appendSlice(gpa, "DRAINING\n");
         } else try body.appendSlice(gpa, "LIVE\n");
     } else if (get and std.mem.eql(u8, path, "/stats")) {
-        inline for (@typeInfo(stats.Counter).@"enum".fields) |f| {
-            try body.print(gpa, "{s}: {d}\n", .{ f.name, stats.sum(c.shared.stats, @enumFromInt(f.value)) });
+        const info = @typeInfo(stats.Counter).@"enum";
+        inline for (info.field_names, info.field_values) |fname, value| {
+            try body.print(gpa, "{s}: {d}\n", .{ fname, stats.sum(c.shared.stats, @enumFromInt(value)) });
         }
     } else if (get and std.mem.eql(u8, path, "/metrics")) {
         ctype.* = "text/plain; version=0.0.4";

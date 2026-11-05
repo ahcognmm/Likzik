@@ -2,7 +2,7 @@
 # End-to-end tests: real likzik binary, nginx + a Python echo server as
 # upstreams. Needs: nginx, curl, nc, python3, openssl. Run from the repo root:
 #
-#   zig build -Doptimize=ReleaseSafe && tests/integration/run.sh
+#   zig build -Doptimize=safe && tests/integration/run.sh
 #   LIKZIK=path/to/likzik tests/integration/run.sh   (e.g. a Debug build)
 set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)

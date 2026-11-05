@@ -24,7 +24,7 @@ pub const Timer = struct {
 };
 
 pub const Wheel = struct {
-    slots: [n_slots]?*Timer = [_]?*Timer{null} ** n_slots,
+    slots: [n_slots]?*Timer = @splat(null),
     /// Tick last processed.
     cur_tick: u64,
     count: usize = 0,

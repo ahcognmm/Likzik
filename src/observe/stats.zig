@@ -51,7 +51,7 @@ pub const Counter = enum {
     draining,
 };
 
-pub const n_counters = @typeInfo(Counter).@"enum".fields.len;
+pub const n_counters = @typeInfo(Counter).@"enum".field_names.len;
 
 /// Counters that are gauges in Prometheus terms.
 pub fn isGauge(c: Counter) bool {
@@ -62,7 +62,7 @@ pub fn isGauge(c: Counter) bool {
 }
 
 pub const WorkerStats = struct {
-    v: [n_counters]u64 align(std.atomic.cache_line) = [_]u64{0} ** n_counters,
+    v: [n_counters]u64 align(std.atomic.cache_line) = @splat(0),
 
     pub inline fn add(self: *WorkerStats, c: Counter, n: u64) void {
         const p = &self.v[@intFromEnum(c)];

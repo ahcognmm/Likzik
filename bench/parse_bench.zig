@@ -1,5 +1,5 @@
 //! Parser throughput on a set of realistic request heads.
-//! `zig build bench-parse` (ReleaseFast).
+//! `zig build bench-parse` (built with -Doptimize=fast).
 
 const std = @import("std");
 const likzik = @import("likzik");

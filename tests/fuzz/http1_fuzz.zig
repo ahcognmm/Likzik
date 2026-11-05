@@ -1,4 +1,4 @@
-//! Fuzz tests for the HTTP/1.1 parser (Zig 0.16 integrated fuzzer).
+//! Fuzz tests for the HTTP/1.1 parser.
 //!
 //!   zig build fuzz            runs every target once over its corpus
 //!   zig build fuzz --fuzz     runs the coverage-guided fuzzer
@@ -159,7 +159,8 @@ test "smuggling corpus is rejected" {
 
 // ---------------------------------------------------------------- mutation fuzzer
 //
-// Zig 0.16.0's `-ffuzz` test runner does not compile (a std bug), so this
+// Zig's coverage-guided fuzzer is not usable yet (0.16.0 does not compile
+// it, 0.17.0 aborts with a corrupted coverage file), so this
 // self-contained mutation fuzzer drives the same property checks. It runs
 // a fixed number of iterations as part of `zig build test`; use
 // `zig build fuzz -Dfuzz-iters=10000000` for longer runs.

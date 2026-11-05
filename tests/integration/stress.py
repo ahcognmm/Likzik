@@ -4,7 +4,7 @@
 Hammers the proxy with a mix of clients that misbehave at random points:
 abort mid-head, abort mid-body upload, abort mid-response download, read
 slowly, pipeline, send garbage. Meanwhile well-behaved clients verify that
-every response they get is byte-exact. Run against a Debug or ReleaseSafe
+every response they get is byte-exact. Run against a debug or safe
 build so the proxy's ownership assertions are live.
 
 usage: stress.py HOST:PORT SECONDS [--tls]

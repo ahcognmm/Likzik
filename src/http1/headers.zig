@@ -50,11 +50,11 @@ pub const Id = enum(u8) {
 
 /// Lowercase canonical spelling of each id (index = @intFromEnum).
 pub const names = blk: {
-    const fields = @typeInfo(Id).@"enum".fields;
-    var out: [fields.len][]const u8 = undefined;
-    for (fields, 0..) |f, i| {
-        var buf: [f.name.len]u8 = undefined;
-        for (f.name, 0..) |c, j| buf[j] = if (c == '_') '-' else c;
+    const field_names = @typeInfo(Id).@"enum".field_names;
+    var out: [field_names.len][]const u8 = undefined;
+    for (field_names, 0..) |fname, i| {
+        var buf: [fname.len]u8 = undefined;
+        for (fname, 0..) |c, j| buf[j] = if (c == '_') '-' else c;
         const final = buf;
         out[i] = &final;
     }
@@ -102,7 +102,7 @@ const perfect: Table = blk: {
     @setEvalBranchQuota(2_000_000);
     var seed: u32 = 1;
     search: while (seed < 100_000) : (seed += 1) {
-        var slots = [_]Id{.other} ** table_size;
+        var slots: [table_size]Id = @splat(.other);
         for (1..names.len) |i| {
             const slot = hash(seed, names[i]);
             if (slots[slot] != .other) continue :search;

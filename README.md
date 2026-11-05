@@ -10,17 +10,17 @@ yet; see [docs/status.md](docs/status.md) for the plan-by-plan breakdown.
 
 ## Build
 
-Requires Zig 0.16.x, OpenSSL 3.x development files (`libssl-dev`), and
+Requires Zig 0.17.x, OpenSSL 3.x development files (`libssl-dev`), and
 Linux 6.14+ (6.18 LTS in production).
 
 ```sh
-zig build -Doptimize=ReleaseSafe      # binary in zig-out/bin/likzik
+zig build -Doptimize=safe      # binary in zig-out/bin/likzik
 zig build test                        # unit tests + parser fuzz corpus + mutation fuzzer
 tests/integration/run.sh              # end-to-end tests (needs nginx, curl, nc, python3)
 bench/vs_nginx.sh                     # side-by-side with nginx (needs nginx, wrk)
 ```
 
-Early production builds should use `ReleaseSafe`.
+Early production builds should use the `safe` mode (`-Doptimize=safe`).
 
 ## Run
 
