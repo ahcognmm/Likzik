@@ -66,6 +66,19 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(gw_exe);
 
+    // likzik-ui: web dashboard (status from the admin endpoint, config
+    // edits through the config file). Runs beside the proxy.
+    const ui_exe = b.addExecutable(.{
+        .name = "likzik-ui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ui/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "likzik", .module = lib }},
+        }),
+    });
+    b.installArtifact(ui_exe);
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();

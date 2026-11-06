@@ -30,6 +30,19 @@ and path transforms, redirects. It is configured in the config's
 `extensions.gateway` section; see [docs/gateway.md](docs/gateway.md) and
 [config/gateway.example.json](config/gateway.example.json).
 
+## Dashboard
+
+`likzik-ui` is a small web dashboard in the style of Traefik's: overview
+with live counters, routers, services, middlewares and entrypoints, and
+editing that is validated by the proxy before anything is written. It runs
+beside the proxy and needs no changes to it.
+
+```sh
+zig-out/bin/likzik-ui -c /etc/likzik/likzik.json      # http://127.0.0.1:9902/
+```
+
+See [docs/dashboard.md](docs/dashboard.md).
+
 ## Run
 
 ```sh
