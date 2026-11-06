@@ -1,0 +1,29 @@
+{
+ "keys": [
+  {
+   "kty": "RSA",
+   "key_ops": [
+    "verify"
+   ],
+   "n": "1LXfKAGl3Di_d43zFTn6XoutBc17UIV3Ugme2DCMIu7_xgmeMDozDHRf4DNzKQZQ2UtoHQp_e5ytmNm6iVm9be3KV1DqpKkM2wwkkDE-cjdq6r0FGRRzktkRb0aoyLl4CVRpRlpHdN5ymGLagGlfJfhS2Q_iG2kHNiadvCgPxmEPDzzvvqOhvQComPj-y_0Lw2yB0dRsWdDys0z3uVFZKlpsHkiicsMJT2LK8X-6DseFjhHCiYteCOLXxPfdRZBrzkJPLo1J2QGmWlY3rJr89aT7WSsnRrPFUVW9TGMalevQhKFDOTOS3QbzOoOFCGmptbGiWSJoJB_RFcZCJguGjw",
+   "e": "AQAB",
+   "kid": "rsa1",
+   "use": "sig"
+  },
+  {
+   "kty": "EC",
+   "crv": "P-256",
+   "x": "poQUkRQHzlqdnymcMF1RqC96fCc3ie7cj5K5wn_wCAc",
+   "y": "-LapTUrsJzqfCcocTesqyg00nXuKpXklfgGeEB7faCs",
+   "kid": "ec1",
+   "use": "sig"
+  },
+  {
+   "x": "sACd29BNO9_nS-oeT5R2Sj_fVu_z4U-Wvx9T1vQ056U",
+   "kty": "OKP",
+   "crv": "Ed25519",
+   "kid": "ed1",
+   "use": "sig"
+  }
+ ]
+}

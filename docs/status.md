@@ -112,9 +112,24 @@ Legend: **done**, **partial**, **not started**.
 | xDS (ADS SotW, delta) | not started (model is xDS-shaped) |
 | Local admin endpoint | done: `/ready`, `/stats`, `/metrics`, `/server_info`, `POST /reload`, `POST /drain`. Auth model is still an open question. |
 
-## Gateway layer, plugins
+## Gateway layer
 
-Not started (Phase 3+).
+`likzik-gw` (see docs/gateway.md): the core binary plus an extension behind
+the generic filter interface `src/proxy/filter.zig`; gateway code is in
+`src/gateway/`.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| Radix-trie router (static > param > wildcard, header/method/query matchers) | done | Segment trie with backtracking; host is checked per candidate rather than one trie per host. Regex matchers not started. |
+| Lookups allocate nothing | done | Params are slices of a per-worker normalized path buffer. |
+| API keys (hashed set in the snapshot) | done | SHA-256; key may be given only as its hash. |
+| JWT (JWKS, alg allow-list, exp/nbf/aud/iss) | done | std.crypto (RSA PKCS#1/PSS, ECDSA P-256/384, Ed25519, HMAC) with a per-worker verification cache. JWKS from file/inline; fetching JWKS URLs on the control thread is not started. |
+| mTLS identity, OAuth2 introspection | not started | |
+| Local rate limiting | done, different mechanism | One table shared by all workers (per-bucket spinlocks) instead of per-worker rate÷N, which under-limits single-connection clients. |
+| Global rate limiting (Envoy RLS) | not started | |
+| Transforms (headers, path rewrite, redirect) | done | Plus fixed responses. Body transforms not started. |
+| Plugins (comptime registry, WASM) | not started | The filter interface is the attachment point. |
+| Mirroring rules | not started | |
 
 ## Observability
 

@@ -35,6 +35,37 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("build_options", options_mod);
     b.installArtifact(exe);
 
+    // likzik-gw: core + API gateway extension (src/gateway).
+    const gateway_mod = b.createModule(.{
+        .root_source_file = b.path("src/gateway/gateway.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "likzik", .module = lib }},
+    });
+    const core_main_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "likzik", .module = lib },
+            .{ .name = "build_options", .module = options_mod },
+        },
+    });
+    const gw_exe = b.addExecutable(.{
+        .name = "likzik-gw",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/gw_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "likzik", .module = lib },
+                .{ .name = "gateway", .module = gateway_mod },
+                .{ .name = "likzik_main", .module = core_main_mod },
+            },
+        }),
+    });
+    b.installArtifact(gw_exe);
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();
@@ -45,6 +76,8 @@ pub fn build(b: *std.Build) void {
     const run_unit = b.addRunArtifact(unit);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit.step);
+    const gw_tests = b.addTest(.{ .root_module = gateway_mod });
+    test_step.dependOn(&b.addRunArtifact(gw_tests).step);
 
     // Parser fuzz tests. `zig build fuzz -Dfuzz-iters=N` runs the mutation
     // fuzzer longer; `--fuzz` uses Zig's coverage-guided fuzzer.

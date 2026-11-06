@@ -1,0 +1,49 @@
+{
+  "version": "gateway-example-1",
+  "admin": { "address": "127.0.0.1:9901" },
+  "listeners": [
+    { "name": "api", "address": "0.0.0.0:8080", "route_config": "fallback" }
+  ],
+  "route_configs": [
+    { "name": "fallback", "virtual_hosts": [ { "name": "all", "domains": ["*"],
+      "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "web" } } ] } ] }
+  ],
+  "clusters": [
+    { "name": "users", "endpoints": [ { "address": "10.0.1.10:8000" }, { "address": "10.0.1.11:8000" } ] },
+    { "name": "orders", "endpoints": [ { "address": "10.0.2.10:8000" } ] },
+    { "name": "web", "endpoints": [ { "address": "10.0.3.10:80" } ] }
+  ],
+  "extensions": {
+    "gateway": {
+      "fallthrough": true,
+      "consumer_header": "X-Consumer",
+      "api_keys": [
+        { "name": "partners", "header": "X-API-Key",
+          "keys": [ { "consumer": "acme", "sha256": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8" } ] }
+      ],
+      "jwt": [
+        { "name": "idp", "algorithms": ["RS256", "ES256"],
+          "issuer": "https://idp.example.com/", "audiences": ["api.example.com"],
+          "jwks_file": "/etc/likzik/jwks.json",
+          "claims_to_headers": [ { "claim": "sub", "header": "X-User-Id" } ] }
+      ],
+      "rate_limits": [
+        { "name": "per-consumer", "requests": 100, "per": "second", "burst": 200, "key": "consumer" },
+        { "name": "per-ip", "requests": 600, "per": "minute", "key": "client_ip" }
+      ],
+      "routes": [
+        { "name": "user", "hosts": ["api.example.com"], "path": "/v1/users/:id", "methods": ["GET", "PUT"],
+          "auth": ["idp", "partners"], "rate_limits": ["per-consumer"],
+          "cluster": "users", "rewrite": "/users/{id}", "timeout_ms": 5000,
+          "request_headers": { "set": [ { "name": "X-Request-Source", "value": "gateway" } ] },
+          "response_headers": { "remove": ["Server"], "set": [ { "name": "X-Frame-Options", "value": "DENY" } ] } },
+        { "name": "orders", "hosts": ["api.example.com"], "path": "/v1/orders/*rest",
+          "auth": ["idp"], "rate_limits": ["per-consumer"], "cluster": "orders", "rewrite": "/{rest}" },
+        { "name": "public", "hosts": ["api.example.com"], "path": "/v1/public/*rest",
+          "rate_limits": ["per-ip"], "cluster": "users", "rewrite": "/public/{rest}" },
+        { "name": "legacy", "path": "/api/v0/*rest", "redirect": { "status": 308, "location": "https://{host}/v1/{rest}" } },
+        { "name": "health", "path": "/healthz", "respond": { "status": 200, "body": "ok\n" } }
+      ]
+    }
+  }
+}

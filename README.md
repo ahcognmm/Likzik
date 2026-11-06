@@ -22,6 +22,14 @@ bench/vs_nginx.sh                     # side-by-side with nginx (needs nginx, wr
 
 Early production builds should use the `safe` mode (`-Doptimize=safe`).
 
+## API gateway
+
+`likzik-gw` is the same proxy with the API gateway: a radix-trie router
+with path params, API-key and JWT authentication, rate limiting, header
+and path transforms, redirects. It is configured in the config's
+`extensions.gateway` section; see [docs/gateway.md](docs/gateway.md) and
+[config/gateway.example.json](config/gateway.example.json).
+
 ## Run
 
 ```sh
