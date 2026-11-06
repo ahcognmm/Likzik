@@ -19,6 +19,9 @@ pub const Config = struct {
     listeners: []const Listener,
     route_configs: []const RouteConfig = &.{},
     clusters: []const Cluster = &.{},
+    /// Opaque configuration for the binary's extension (e.g. the API
+    /// gateway in likzik-gw). The core passes it through unread.
+    extensions: ?std.json.Value = null,
 };
 
 pub const Admin = struct {

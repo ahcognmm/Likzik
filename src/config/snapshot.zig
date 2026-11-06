@@ -8,6 +8,7 @@ const validate_mod = @import("validate.zig");
 const Address = @import("../net/addr.zig").Address;
 const Method = @import("../http1/parser.zig").Method;
 const Tls = @import("../tls/backend.zig").Tls;
+const filter = @import("../proxy/filter.zig");
 
 pub const Diag = validate_mod.Diag;
 
@@ -138,8 +139,12 @@ pub const Snapshot = struct {
     require_ktls: bool,
     /// True when any listener or cluster uses TLS.
     uses_tls: bool,
+    /// Compiled `extensions` state, owned by `ext` (see proxy/filter.zig).
+    ext: ?*const filter.Extension = null,
+    ext_state: ?*anyopaque = null,
 
     pub fn destroy(self: *Snapshot) void {
+        if (self.ext) |e| if (self.ext_state) |st| if (e.destroy) |d| d(st);
         freeTls(self.listeners, self.clusters);
         var a = self.arena;
         a.deinit();
@@ -340,6 +345,15 @@ pub fn build(gpa: std.mem.Allocator, cfg: *const model.Config, reg: *Registry, d
         .require_ktls = cfg.tls.require_ktls,
         .uses_tls = uses_tls,
     };
+    if (cfg.extensions) |ext_cfg| {
+        const ext = filter.registered orelse
+            return diag.set("config has an 'extensions' section, but this binary has no extension (use likzik-gw for the API gateway)", .{});
+        snap.ext = ext;
+        snap.ext_state = ext.compile(a, ext_cfg, snap, diag) catch |e| {
+            if (e == error.InvalidConfig and diag.len > 0) return e;
+            return diag.set("{s}: {s}", .{ ext.name, @errorName(e) });
+        };
+    }
     // Move the arena into the snapshot last, after all allocations.
     snap.arena = arena;
     return snap;

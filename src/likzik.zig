@@ -58,6 +58,7 @@ pub const tls = struct {
 
 pub const proxy = struct {
     pub const http = @import("proxy/http.zig");
+    pub const filter = @import("proxy/filter.zig");
 };
 
 pub const l4 = struct {

@@ -34,6 +34,7 @@ const snapshot = @import("../config/snapshot.zig");
 const socket = @import("../net/socket.zig");
 const upool = @import("../upstream/pool.zig");
 const lb = @import("../upstream/lb.zig");
+const filter = @import("filter.zig");
 const tls_backend = @import("../tls/backend.zig");
 const Tls = tls_backend.Tls;
 
@@ -126,6 +127,9 @@ pub const Down = struct {
     /// The connection closes because of an error response: the rest of a
     /// bad request may still be unread, so always linger.
     error_close: bool = false,
+    /// The extension handled this request: call onResponse with the token.
+    ext_active: bool = false,
+    ext_token: usize = 0,
 
     fn ip(self: *const Down) []const u8 {
         return self.ip_buf[0..self.ip_len];
@@ -533,20 +537,55 @@ fn startRequest(w: *Worker, di: u32, head: []const u8) void {
     d.replayed = false;
 
     const lcfg = w.listenerCfg(d.listener) orelse return localError(w, di, 503, true);
-    const route = lcfg.routes.?.select(info.host, req.target, req.method) orelse {
-        w.stats.inc(.downstream_rq_no_route);
-        return localError(w, di, 404, info.framing != .none);
+    d.ext_active = false;
+
+    // Extension (API gateway) first: it may route, edit or answer.
+    var ext_out: filter.RequestOut = .{};
+    if (filter.registered) |ext| if (w.cur.ext_state) |st| if (w.ext_ws) |ws| {
+        const ctx: filter.RequestCtx = .{
+            .worker = w.id,
+            .workers = @intCast(w.shared.stats.len),
+            .now_ms = w.now_ms,
+            .req = &req,
+            .host = info.host,
+            .client_ip = d.ip(),
+            .tls = d.tls != null,
+            .listener = lcfg,
+            .snapshot = w.cur,
+        };
+        switch (ext.onRequest(ws, st, &ctx, &ext_out)) {
+            .proceed => {},
+            .respond => |r| return localResponse(w, di, r.status, info.framing != .none, r.content_type, r.headers, r.body),
+        }
+        d.ext_active = ext.onResponse != null;
+        d.ext_token = ext_out.token;
     };
+
+    var target_buf: [8192]u8 = undefined;
+    var target: ?[]const u8 = null;
+    var route_rewrite: ?[]const u8 = null;
+    var route_path_len: usize = 0;
+    if (ext_out.cluster) |c| {
+        d.cluster = c;
+        d.timeout_ms = if (ext_out.timeout_ms != 0) ext_out.timeout_ms else 60_000;
+        target = ext_out.target;
+    } else {
+        const route = lcfg.routes.?.select(info.host, req.target, req.method) orelse {
+            w.stats.inc(.downstream_rq_no_route);
+            return localError(w, di, 404, info.framing != .none);
+        };
+        d.cluster = route.cluster;
+        d.timeout_ms = route.timeout_ms;
+        route_rewrite = route.prefix_rewrite;
+        route_path_len = route.path.len;
+        if (ext_out.target) |t| target = t;
+    }
     d.snap = w.pinCurrent() orelse return localError(w, di, 503, true);
-    d.cluster = route.cluster;
-    d.timeout_ms = route.timeout_ms;
     d.retryable = req.method.idempotent() and info.framing == .none;
 
     // Path rewrite.
-    var target_buf: [8192]u8 = undefined;
-    var target: ?[]const u8 = null;
-    if (route.prefix_rewrite) |pr| {
-        const tail = req.target[route.path.len..];
+    if (route_rewrite) |pr| {
+        const tail = req.target[route_path_len..];
         if (pr.len + tail.len > target_buf.len) return localError(w, di, 414, true);
         @memcpy(target_buf[0..pr.len], pr);
         // Avoid "//" when both the rewrite ends and the tail starts with '/'.
@@ -562,6 +601,8 @@ fn startRequest(w: *Worker, di: u32, head: []const u8) void {
         .proto = if (d.tls != null) "https" else "http",
         .trusted_client = lcfg.trust_forwarded_headers,
         .target = target,
+        .remove = ext_out.remove,
+        .add = ext_out.add,
     }) catch {
         w.blocks.unref(blk);
         return localError(w, di, 431, true);
@@ -1132,7 +1173,11 @@ fn onRespHead(w: *Worker, di: u32, ui: u32, head: []const u8) bool {
         return false;
     };
     var out: codec.Out = .{ .buf = w.blocks.bytes(blk) };
-    codec.writeResponse(&out, &resp, &info, .{ .keep_alive = d.keep_alive, .client_http10 = d.client10, .dechunk = d.resp_dechunk }) catch {
+    var rout: filter.ResponseOut = .{};
+    if (d.ext_active) if (d.snap) |s| if (s.ext) |ext| if (ext.onResponse) |onResp| if (s.ext_state) |st| if (w.ext_ws) |ws| {
+        onResp(ws, st, &.{ .status = resp.status, .headers = resp.headers, .token = d.ext_token }, &rout);
+    };
+    codec.writeResponse(&out, &resp, &info, .{ .keep_alive = d.keep_alive, .client_http10 = d.client10, .dechunk = d.resp_dechunk, .remove = rout.remove, .add = rout.add }) catch {
         w.blocks.unref(blk);
         respProtocolError(w, di, ui);
         return false;
@@ -1333,6 +1378,13 @@ fn endExchange(w: *Worker, di: u32) void {
 /// Sends a locally generated response. `close` forces the connection to
 /// close after it (always the case when request body bytes are unread).
 fn localError(w: *Worker, di: u32, status: u16, close: bool) void {
+    var body_buf: [64]u8 = undefined;
+    const body = std.fmt.bufPrint(&body_buf, "{d} {s}\n", .{ status, codec.reasonPhrase(status) }) catch "";
+    localResponse(w, di, status, close, "text/plain", &.{}, body);
+}
+
+/// Sends a locally generated response (errors, or an extension's answer).
+fn localResponse(w: *Worker, di: u32, status: u16, close: bool, content_type: []const u8, extra: []const codec.Edit, body: []const u8) void {
     const d = get(w, di);
     if (d.phase == .closing) return;
     if (d.resp_started) {
@@ -1352,9 +1404,12 @@ fn localError(w: *Worker, di: u32, status: u16, close: bool) void {
         return;
     };
     var out: codec.Out = .{ .buf = w.blocks.bytes(blk) };
-    var body_buf: [64]u8 = undefined;
-    const body = std.fmt.bufPrint(&body_buf, "{d} {s}\n", .{ status, codec.reasonPhrase(status) }) catch "";
-    codec.writeLocal(&out, status, d.keep_alive, body) catch unreachable;
+    codec.writeLocalEx(&out, status, d.keep_alive, content_type, extra, body) catch {
+        // Larger than one block: an extension's body is too big.
+        out.len = 0;
+        codec.writeLocal(&out, 500, false, "500 Internal Server Error\n") catch unreachable;
+        d.keep_alive = false;
+    };
     countStatus(w, status);
     if (status == 408 or status == 504) w.stats.inc(.downstream_rq_timeout);
     d.resp_started = true;

@@ -12,6 +12,14 @@ const rules = @import("smuggling_rules.zig");
 
 pub const Error = error{NoSpace};
 
+/// A header to add (extensions use these for request/response edits).
+pub const Edit = struct { name: []const u8, value: []const u8 };
+
+fn removed(names: []const []const u8, name: []const u8) bool {
+    for (names) |n| if (std.ascii.eqlIgnoreCase(n, name)) return true;
+    return false;
+}
+
 pub const Out = struct {
     buf: []u8,
     len: usize = 0,
@@ -49,6 +57,9 @@ pub const ForwardCtx = struct {
     trusted_client: bool = false,
     /// Replaces the target when a route rewrites the path.
     target: ?[]const u8 = null,
+    /// Extension edits: headers to drop (by name) and to add.
+    remove: []const []const u8 = &.{},
+    add: []const Edit = &.{},
 };
 
 /// Writes the upstream request head.
@@ -70,8 +81,10 @@ pub fn writeRequest(out: *Out, req: *const parser.Request, info: *const rules.Re
             else => {},
         }
         if (h.id == .other and info.conn.nominates(h.name)) continue;
+        if (ctx.remove.len > 0 and removed(ctx.remove, h.name)) continue;
         try out.header(h.name, h.value);
     }
+    for (ctx.add) |e| try out.header(e.name, e.value);
     switch (info.framing) {
         .length => |n| {
             try out.put("Content-Length: ");
@@ -107,6 +120,9 @@ pub const ResponseMode = struct {
     client_http10: bool,
     /// Body is de-chunked for the client (HTTP/1.0 client, chunked upstream).
     dechunk: bool,
+    /// Extension edits.
+    remove: []const []const u8 = &.{},
+    add: []const Edit = &.{},
 };
 
 /// Writes the downstream response head.
@@ -124,8 +140,10 @@ pub fn writeResponse(out: *Out, resp: *const parser.Response, info: *const rules
         if (headers.isHopByHop(h.id)) continue;
         if (h.id == .other and info.conn.nominates(h.name)) continue;
         if (h.id == .content_length and mode.dechunk) continue;
+        if (mode.remove.len > 0 and removed(mode.remove, h.name)) continue;
         try out.header(h.name, h.value);
     }
+    for (mode.add) |e| try out.header(e.name, e.value);
     if (info.framing == .chunked and !mode.dechunk) try out.put("Transfer-Encoding: chunked\r\n");
     if (!mode.keep_alive) {
         try out.put("Connection: close\r\n");
@@ -140,6 +158,12 @@ pub fn reasonPhrase(status: u16) []const u8 {
         100 => "Continue",
         200 => "OK",
         400 => "Bad Request",
+        301 => "Moved Permanently",
+        302 => "Found",
+        303 => "See Other",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
@@ -147,6 +171,7 @@ pub fn reasonPhrase(status: u16) []const u8 {
         413 => "Content Too Large",
         414 => "URI Too Long",
         421 => "Misdirected Request",
+        429 => "Too Many Requests",
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
         501 => "Not Implemented",
@@ -160,11 +185,19 @@ pub fn reasonPhrase(status: u16) []const u8 {
 
 /// Writes a complete locally generated response.
 pub fn writeLocal(out: *Out, status: u16, keep_alive: bool, body: []const u8) Error!void {
+    return writeLocalEx(out, status, keep_alive, "text/plain", &.{}, body);
+}
+
+/// A local response with a content type and extra headers.
+pub fn writeLocalEx(out: *Out, status: u16, keep_alive: bool, content_type: []const u8, extra: []const Edit, body: []const u8) Error!void {
     try out.put("HTTP/1.1 ");
     try out.putInt(status);
     try out.put(" ");
     try out.put(reasonPhrase(status));
-    try out.put("\r\nServer: likzik\r\nContent-Type: text/plain\r\nContent-Length: ");
+    try out.put("\r\nServer: likzik\r\n");
+    try out.header("Content-Type", content_type);
+    for (extra) |e| try out.header(e.name, e.value);
+    try out.put("Content-Length: ");
     try out.putInt(body.len);
     try out.put(if (keep_alive) "\r\n\r\n" else "\r\nConnection: close\r\n\r\n");
     try out.put(body);

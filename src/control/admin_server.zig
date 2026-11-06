@@ -16,6 +16,7 @@ const socket = @import("../net/socket.zig");
 const stats = @import("../observe/stats.zig");
 const prometheus = @import("../observe/prometheus.zig");
 const Control = @import("thread.zig").Control;
+const filter = @import("../proxy/filter.zig");
 
 const log = std.log.scoped(.admin);
 
@@ -81,6 +82,12 @@ fn handle(c: *Control, method: []const u8, path: []const u8, body: *std.ArrayLis
     } else if (get and std.mem.eql(u8, path, "/metrics")) {
         ctype.* = "text/plain; version=0.0.4";
         try prometheus.write(body, gpa, c.shared.stats);
+        if (filter.registered) |ext| if (ext.writeMetrics) |wm| {
+            const states = try gpa.alloc(?*anyopaque, c.shared.ext_states.len);
+            defer gpa.free(states);
+            for (c.shared.ext_states, states) |*src, *dst| dst.* = @atomicLoad(?*anyopaque, src, .acquire);
+            try wm(body, gpa, states);
+        };
     } else if (get and std.mem.eql(u8, path, "/server_info")) {
         ctype.* = "application/json";
         const snap = c.shared.rcu.load();

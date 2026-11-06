@@ -128,6 +128,12 @@ fn sleepMs(ms: u64) void {
 }
 
 pub fn main(init: std.process.Init) !u8 {
+    return run(init);
+}
+
+/// The whole supervisor. Binaries that register an extension (likzik-gw)
+/// set `likzik.proxy.filter.registered` and then call this.
+pub fn run(init: std.process.Init) !u8 {
     const gpa = std.heap.smp_allocator;
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
     const args = parseArgs(argv) catch return 2;
@@ -170,7 +176,10 @@ pub fn main(init: std.process.Init) !u8 {
     const ring_fds = try gpa.alloc(std.atomic.Value(i32), n_workers);
     defer gpa.free(ring_fds);
     for (ring_fds) |*f| f.* = .init(-1);
-    var shared: worker_mod.Shared = .{ .rcu = &rcu, .stats = worker_stats, .ring_fds = ring_fds, .pin_cpus = args.pin, .pbuf_count = args.buffers };
+    const ext_states = try gpa.alloc(?*anyopaque, n_workers);
+    defer gpa.free(ext_states);
+    @memset(ext_states, null);
+    var shared: worker_mod.Shared = .{ .rcu = &rcu, .stats = worker_stats, .ring_fds = ring_fds, .pin_cpus = args.pin, .pbuf_count = args.buffers, .ext_states = ext_states };
 
     const threads = try gpa.alloc(std.Thread, n_workers);
     defer gpa.free(threads);

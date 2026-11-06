@@ -24,6 +24,7 @@ const Address = @import("../net/addr.zig").Address;
 const http = @import("../proxy/http.zig");
 const upool = @import("../upstream/pool.zig");
 const tcp = @import("../l4/tcp_proxy.zig");
+const filter = @import("../proxy/filter.zig");
 
 const log = std.log.scoped(.worker);
 
@@ -40,6 +41,8 @@ pub const Shared = struct {
     ring_fds: []std.atomic.Value(i32),
     /// Tuning that is fixed for the process lifetime.
     pbuf_size: u32 = 16 * 1024,
+    /// Each worker's extension state, for the control thread's metrics.
+    ext_states: []?*anyopaque = &.{},
     pbuf_count: u16 = 256,
     pin_cpus: bool = true,
 };
@@ -89,6 +92,8 @@ pub const Worker = struct {
     now_ms: u64,
     prng: std.Random.DefaultPrng,
     stats: *stats_mod.WorkerStats,
+    /// Per-worker state of the registered extension (null without one).
+    ext_ws: ?*anyopaque = null,
     reap: std.ArrayList(Reap) = .empty,
     rearm_downs: std.ArrayList(Reap) = .empty,
     rearm_ups: std.ArrayList(Reap) = .empty,
@@ -148,10 +153,18 @@ pub const Worker = struct {
         self.ups = try Pool(upool.Up).init(gpa, max_conns);
         errdefer self.ups.deinit(gpa);
         self.tunnels = try Pool(tcp.Tunnel).init(gpa, max_conns);
+        if (filter.registered) |ext| {
+            self.ext_ws = try ext.initWorker(gpa, id, @intCast(shared.stats.len));
+            if (id < shared.ext_states.len) @atomicStore(?*anyopaque, &shared.ext_states[id], self.ext_ws, .release);
+        }
         self.stats.set(.snapshot_generation, snap.generation);
     }
 
     pub fn deinit(self: *Worker) void {
+        if (filter.registered) |ext| if (self.ext_ws) |ws| {
+            if (self.id < self.shared.ext_states.len) @atomicStore(?*anyopaque, &self.shared.ext_states[self.id], null, .release);
+            ext.deinitWorker(self.gpa, ws);
+        };
         for (&self.listeners) |*l| if (l.fd >= 0) socket.closeFd(l.fd);
         self.reap.deinit(self.gpa);
         self.rearm_downs.deinit(self.gpa);
