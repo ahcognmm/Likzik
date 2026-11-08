@@ -49,6 +49,7 @@ pub const upstream = struct {
     pub const health = @import("upstream/health.zig");
     pub const lb = @import("upstream/lb.zig");
     pub const pool = @import("upstream/pool.zig");
+    pub const breaker = @import("upstream/breaker.zig");
 };
 
 pub const tls = struct {

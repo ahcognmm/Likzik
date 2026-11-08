@@ -41,6 +41,7 @@ const Tls = tls_backend.Tls;
 const log = std.log.scoped(.http);
 const access_log = @import("../observe/access_log.zig");
 const pp = @import("../net/proxy_protocol.zig");
+const breaker = @import("../upstream/breaker.zig");
 
 /// Longest request target kept for the access log (longer ones are cut).
 const log_target_max = 512;
@@ -135,6 +136,12 @@ pub const Down = struct {
     /// The extension handled this request: call onResponse with the token.
     ext_active: bool = false,
     ext_token: usize = 0,
+
+    // Circuit breaker and retry accounting for the current exchange.
+    cb_on: bool = false,
+    in_retry: bool = false,
+    retries: u8 = 0,
+    cb_id: u32 = 0,
 
     // PROXY protocol header still expected (consumed before anything else).
     pp_pending: bool = false,
@@ -674,6 +681,10 @@ fn startRequest(w: *Worker, di: u32, head: []const u8) void {
     }
     d.snap = w.pinCurrent() orelse return localError(w, di, 503, true);
     d.retryable = req.method.idempotent() and info.framing == .none;
+    if (!admit(w, d)) {
+        w.stats.inc(.upstream_rq_overflow);
+        return localError(w, di, 503, info.framing != .none);
+    }
 
     // Path rewrite.
     if (route_rewrite) |pr| {
@@ -1252,6 +1263,13 @@ fn onRespHead(w: *Worker, di: u32, ui: u32, head: []const u8) bool {
         }
         return true;
     }
+    // Final response: outlier detection on the endpoint that answered,
+    // then maybe retry a 5xx elsewhere instead of forwarding it.
+    if (resp.status >= 500) w.stats.inc(.upstream_rq_5xx);
+    if (d.cluster) |c| if (d.ep_id) |id| {
+        if (resp.status >= 500) w.endpointFailed(c, id, .http_5xx) else if (w.eps.get(w.gpa, id)) |st| st.recordResponseOk() else |_| {}
+    };
+    if (resp.status >= 500 and tryRetry(w, di, .status, resp.status, d.ep_id)) return false;
     const info = rules.analyzeResponse(&resp, d.method) catch {
         respProtocolError(w, di, ui);
         return false;
@@ -1285,11 +1303,6 @@ fn onRespHead(w: *Worker, di: u32, ui: u32, head: []const u8) bool {
     d.resp = Body.init(info.framing);
     countStatus(w, resp.status);
     d.log_status = resp.status;
-    if (resp.status >= 500) w.stats.inc(.upstream_rq_5xx);
-    // Outlier detection on the endpoint that answered.
-    if (d.cluster) |c| if (d.ep_id) |id| {
-        if (resp.status >= 500) w.endpointFailed(c, id, .http_5xx) else if (w.eps.get(w.gpa, id)) |st| st.recordResponseOk() else |_| {}
-    };
     return d.phase == .exchange;
 }
 
@@ -1394,6 +1407,7 @@ fn upstreamFailed(w: *Worker, di: u32) void {
     const d = get(w, di);
     if (d.phase != .exchange) return;
     const reused = if (d.up) |ui| upool.get(w, ui).reused else false;
+    const prev_ep = d.ep_id;
     detachUp(w, di, true);
     if (d.resp_started) {
         // Mid-response: all we can do is close the client connection.
@@ -1408,6 +1422,7 @@ fn upstreamFailed(w: *Worker, di: u32) void {
         startUpstream(w, di, null);
         return;
     }
+    if (tryRetry(w, di, .reset, 0, prev_ep)) return;
     localError(w, di, 502, true);
 }
 
@@ -1441,6 +1456,7 @@ fn finishResponse(w: *Worker, di: u32) void {
 fn endExchange(w: *Worker, di: u32) void {
     const d = get(w, di);
     logEnd(w, d);
+    releaseLoad(w, d);
     if (d.snap) |s| {
         w.unpin(s);
         d.snap = null;
@@ -1520,6 +1536,64 @@ fn localResponse(w: *Worker, di: u32, status: u16, close: bool, content_type: []
     queueDown(w, di, w.blocks.bytes(blk)[0..out.len], .{ .block = blk });
     if (d.phase == .closing) return;
     endExchange(w, di);
+}
+
+// ---------------------------------------------------------------- circuit breakers and retries
+
+/// Counts the request against its cluster; false when the cluster's
+/// max_requests is reached (circuit open).
+fn admit(w: *Worker, d: *Down) bool {
+    const c = d.cluster.?;
+    d.retries = 0;
+    d.in_retry = false;
+    const load = w.cluster_load.get(w.gpa, c.id) catch return true;
+    if (load.active_rq >= breaker.share(c.breakers.max_requests, w.shared.stats.len)) return false;
+    load.active_rq += 1;
+    d.cb_on = true;
+    d.cb_id = c.id;
+    return true;
+}
+
+fn releaseLoad(w: *Worker, d: *Down) void {
+    if (!d.cb_on) return;
+    d.cb_on = false;
+    const load = w.cluster_load.get(w.gpa, d.cb_id) catch return;
+    load.active_rq -|= 1;
+    if (d.in_retry) load.active_retries -|= 1;
+    d.in_retry = false;
+}
+
+const RetryCause = enum { status, reset };
+
+/// Retries the request on another endpoint when the cluster's policy,
+/// the request (idempotent, no body, nothing sent to the client yet) and
+/// the retry budget allow it. Returns true when a retry started.
+fn tryRetry(w: *Worker, di: u32, cause: RetryCause, status: u16, exclude: ?u32) bool {
+    const d = get(w, di);
+    const c = d.cluster orelse return false;
+    const r = c.retry orelse return false;
+    const wanted = switch (cause) {
+        .reset => r.on_reset,
+        .status => r.on_5xx or (r.on_gateway_error and status >= 502 and status <= 504),
+    };
+    if (!wanted or !d.retryable or d.resp_started or d.head_block == null or !d.cb_on) return false;
+    if (d.retries >= r.num_retries) return false;
+    const load = w.cluster_load.get(w.gpa, c.id) catch return false;
+    if (!d.in_retry) {
+        if (!breaker.retryAllowed(load, r.budget_percent, c.breakers.max_retries, w.shared.stats.len)) {
+            w.stats.inc(.upstream_rq_retry_overflow);
+            return false;
+        }
+        load.active_retries += 1;
+        d.in_retry = true;
+    }
+    d.retries += 1;
+    w.stats.inc(.upstream_rq_retry);
+    detachUp(w, di, true);
+    d.attempts = 0;
+    d.resp_bytes_seen = false;
+    startUpstream(w, di, exclude);
+    return true;
 }
 
 // ---------------------------------------------------------------- access log
@@ -1657,6 +1731,7 @@ pub fn closeDown(w: *Worker, di: u32) void {
     const d = get(w, di);
     if (d.phase == .closing) return;
     logEnd(w, d); // an exchange cut short (status "-" if nothing was sent)
+    releaseLoad(w, d);
     d.phase = .closing;
     w.wheel.cancel(&d.timer);
     detachUp(w, di, true);

@@ -17,6 +17,7 @@ const InBuf = @import("../mem/blocks.zig").InBuf;
 const HeadScanner = @import("../http1/parser.zig").HeadScanner;
 const snapshot = @import("../config/snapshot.zig");
 const socket = @import("../net/socket.zig");
+const breaker = @import("breaker.zig");
 const Address = @import("../net/addr.zig").Address;
 const http = @import("../proxy/http.zig");
 const tls_backend = @import("../tls/backend.zig");
@@ -36,6 +37,8 @@ pub const Up = struct {
     /// Downstream connection using this upstream (state == busy).
     owner: ?u32 = null,
     owner_gen: u32 = 0,
+    /// Cluster this connection was opened for (circuit breaker count).
+    cb_cluster: ?u32 = null,
     in: InBuf = .{},
     scanner: HeadScanner = .{},
     out: sq.SendQueue = .{},
@@ -87,6 +90,8 @@ pub fn acquire(w: *Worker, ep: *const snapshot.Endpoint, c: *const snapshot.Clus
         w.stats.inc(.upstream_cx_pool_hit);
         return ui;
     }
+    const load = try w.cluster_load.get(w.gpa, c.id);
+    if (load.active_cx >= breaker.share(c.breakers.max_connections, w.shared.stats.len)) return error.CircuitOpen;
     const fd = try socket.connectSocket(&ep.addr);
     const ui = w.ups.alloc() orelse {
         socket.closeFd(fd);
@@ -101,6 +106,7 @@ pub fn acquire(w: *Worker, ep: *const snapshot.Endpoint, c: *const snapshot.Clus
         .idle_timeout_ms = c.idle_timeout_ms,
         .max_idle = c.max_idle_per_endpoint,
         .pool_key = key,
+        .cb_cluster = null,
     };
     if (c.tls) |t| {
         // Created now so it holds a reference on the cluster's SSL_CTX even
@@ -113,6 +119,8 @@ pub fn acquire(w: *Worker, ep: *const snapshot.Endpoint, c: *const snapshot.Clus
         u.tls_mode = .handshake;
     }
     u.connect_ts = .{ .sec = @intCast(c.connect_timeout_ms / 1000), .nsec = @intCast((c.connect_timeout_ms % 1000) * std.time.ns_per_ms) };
+    u.cb_cluster = c.id;
+    load.active_cx += 1;
     w.loop.connect(fd, &u.addr.any, u.addr.len(), &u.connect_ts, udOf(w, .u_connect, ui));
     u.pending += 1;
     w.stats.inc(.upstream_cx_total);
@@ -172,6 +180,9 @@ pub fn maybeFree(w: *Worker, ui: u32) void {
     u.in.release(&w.blocks);
     if (u.tls) |t| Tls.freeConn(t);
     socket.closeFd(u.fd);
+    if (u.cb_cluster) |id| if (w.cluster_load.get(w.gpa, id)) |l| {
+        l.active_cx -|= 1;
+    } else |_| {};
     w.ups.release(ui);
     w.stats.dec(.upstream_cx_active);
 }

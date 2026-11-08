@@ -158,11 +158,39 @@ pub const Cluster = struct {
     consecutive_5xx: u8 = 0,
     /// Never eject more than this share of the cluster's endpoints.
     max_ejection_percent: u8 = 50,
+    circuit_breakers: CircuitBreakers = .{},
+    retry: ?RetryPolicy = null,
     tls: ?UpstreamTls = null,
     /// Send a PROXY protocol header with the client's address to the
     /// endpoints. TCP listeners only.
     proxy_protocol: ?@import("../net/proxy_protocol.zig").Version = null,
     endpoints: []const Endpoint,
+};
+
+/// Process-wide limits for one cluster (0 = unlimited). Over a limit the
+/// proxy answers 503 at once instead of piling onto a struggling cluster.
+pub const CircuitBreakers = struct {
+    max_connections: u32 = 0,
+    max_requests: u32 = 0,
+    max_retries: u32 = 0,
+};
+
+pub const RetryOn = enum {
+    /// Any 5xx response.
+    @"5xx",
+    /// 502, 503 or 504 from the upstream.
+    gateway_error,
+    /// The connection broke before a response arrived.
+    reset,
+};
+
+/// Retries idempotent requests without a body on another endpoint.
+pub const RetryPolicy = struct {
+    retry_on: []const RetryOn = &.{ .gateway_error, .reset },
+    num_retries: u8 = 1,
+    /// Retries in flight may be at most this share of active requests
+    /// (with a floor of 3 per worker).
+    budget_percent: u8 = 20,
 };
 
 pub const Endpoint = struct {

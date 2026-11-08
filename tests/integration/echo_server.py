@@ -1,4 +1,4 @@
-import socket, threading, sys
+import socket, threading, sys, time
 def handle(c):
     f = c.makefile('rb')
     try:
@@ -22,6 +22,10 @@ def handle(c):
                         break
                     body += f.read(sz); f.readline()
             resp = b''.join(raw) + b'BODY:' + body
+            if line.startswith(b'GET /sleep'):
+                time.sleep(1)
+            if b' /reset' in line:
+                c.close(); return
             if line.startswith(b'GET /chunked'):
                 c.sendall(b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n')
             elif line.startswith(b'GET /close'):

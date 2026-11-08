@@ -99,7 +99,10 @@ Legend: **done**, **partial**, **not started**.
 | Per-worker pool keyed by endpoint, idle caps, liveness | 1 | done (keyed by endpoint; TLS/SNI/ALPN key parts come with TLS) |
 | Round robin / weighted RR / P2C least-request | 1 | done (+ weighted random) |
 | Passive health | 1 | done (connect failures → ejection with backoff; 5xx counted) |
-| Cross-worker handoff, active health, outlier detection, retries budget, circuit breaking, mirroring | 2+ | not started. Safe retries exist: connect failures retry on another endpoint; a request on a pooled connection the upstream just closed is replayed once if idempotent and bodiless. |
+| Outlier detection (consecutive 5xx, max ejection %) | 2 | done (per worker; docs/upstreams.md) |
+| Retries: budgeted, idempotent only, different host | 2 | done: `retry_on` gateway_error / 5xx / reset, budget % of active requests, `max_retries`. Per-try timeouts not started. |
+| Circuit breaking (connections, requests, retries) | 2 | done, per-worker shares of process-wide limits. No pending queue (HTTP/1.1 connects at once). |
+| Cross-worker handoff, active health, mirroring | 2+ | not started |
 | Ring hash / Maglev | 3 | not started |
 
 ## Dynamic configuration

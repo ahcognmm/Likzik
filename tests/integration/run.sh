@@ -92,12 +92,20 @@ cat > "$WORK/likzik.json" <<JSON
     { "name": "tlsup", "domains": ["tlsup.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "tlsup" } } ] },
     { "name": "badtls", "domains": ["badtls.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "badtls" } } ] },
     { "name": "flaky", "domains": ["flaky.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "flaky" } } ] },
+    { "name": "retry5xx", "domains": ["retry5xx.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "retry5xx" } } ] },
+    { "name": "retryreset", "domains": ["retryreset.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "retryreset" } } ] },
+    { "name": "limited", "domains": ["limited.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "limited" } } ] },
     { "name": "default", "domains": ["*"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "web" } } ] } ] } ],
   "clusters": [
     { "name": "web", "lb_policy": "round_robin", "endpoints": [ { "address": "127.0.0.1:19001" }, { "address": "127.0.0.1:19002" } ] },
     { "name": "echo", "endpoints": [ { "address": "127.0.0.1:19003" } ] },
     { "name": "flaky", "lb_policy": "round_robin", "consecutive_5xx": 3, "eject_ms": 60000,
       "endpoints": [ { "address": "127.0.0.1:19002" }, { "address": "127.0.0.1:19005" } ] },
+    { "name": "retry5xx", "lb_policy": "round_robin", "retry": { "retry_on": ["5xx"], "num_retries": 1 },
+      "endpoints": [ { "address": "127.0.0.1:19005" }, { "address": "127.0.0.1:19002" } ] },
+    { "name": "retryreset", "lb_policy": "round_robin", "retry": { "retry_on": ["reset"] },
+      "endpoints": [ { "address": "127.0.0.1:19003" }, { "address": "127.0.0.1:19002" } ] },
+    { "name": "limited", "circuit_breakers": { "max_requests": 2 }, "endpoints": [ { "address": "127.0.0.1:19003" } ] },
     { "name": "self_https", "endpoints": [ { "address": "127.0.0.1:18444" } ] },
     { "name": "pp_in", "proxy_protocol": "v1", "endpoints": [ { "address": "127.0.0.1:18447" } ] },
     { "name": "dead", "connect_timeout_ms": 300, "endpoints": [ { "address": "127.0.0.1:1" } ] },
@@ -214,6 +222,17 @@ echo "outlier detection"
 for i in $(seq 40); do curl -s -o /dev/null -H 'Host: flaky.test' $P/; done
 check "endpoint returning 5xx is ejected" "$(for i in $(seq 12); do curl -s -H 'Host: flaky.test' $P/; done | sort -u | tr -d '\n')" "b"
 check "ejection counted" "$(curl -s 127.0.0.1:19901/stats | grep -c '^endpoint_ejections: [1-9]')" "1"
+
+echo "retries and circuit breaking"
+check "5xx retried on another endpoint" "$(for i in $(seq 10); do curl -s -H 'Host: retry5xx.test' $P/; done | sort -u | tr -d '\n')" "b"
+check "reset retried on another endpoint" "$(for i in $(seq 10); do code -H 'Host: retryreset.test' $P/reset; echo; done | sort -u | tr '\n' ' ')" "404 "
+check "POST with a body is not retried" "$(for i in $(seq 6); do code -X POST -d x -H 'Host: retryreset.test' $P/reset; echo; done | grep -c 502 | awk '{print ($1 > 0)}')" "1"
+check "retries counted" "$(curl -s 127.0.0.1:19901/stats | grep -c '^upstream_rq_retry: [1-9]')" "1"
+cbp=(); for i in $(seq 8); do code -H 'Host: limited.test' $P/sleep >> "$WORK/cb.txt" & cbp+=($!); done; wait "${cbp[@]}"
+check "circuit breaker answers 503 over max_requests" "$(grep -c 503 "$WORK/cb.txt" | awk '{print ($1 > 0)}')" "1"
+check "circuit breaker lets requests within the limit through" "$(grep -c 200 "$WORK/cb.txt" | awk '{print ($1 > 0 && $1 <= 2)}')" "1"
+check "overflow counted" "$(curl -s 127.0.0.1:19901/stats | grep -c '^upstream_rq_overflow: [1-9]')" "1"
+check "requests flow again after the burst" "$(code -H 'Host: limited.test' $P/)" "200"
 
 echo "proxy protocol"
 xff() { grep -ai '^X-Forwarded-For' | tr -d '\r'; }

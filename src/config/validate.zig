@@ -98,7 +98,13 @@ pub fn validate(cfg: *const model.Config, d: *Diag) error{InvalidConfig}!void {
         }
     }
 
-    for (cfg.clusters) |c| if (c.max_ejection_percent > 100) return d.set("cluster '{s}': max_ejection_percent must be 0..100", .{c.name});
+    for (cfg.clusters) |c| {
+        if (c.max_ejection_percent > 100) return d.set("cluster '{s}': max_ejection_percent must be 0..100", .{c.name});
+        if (c.retry) |r| {
+            if (r.budget_percent > 100) return d.set("cluster '{s}': retry.budget_percent must be 0..100", .{c.name});
+            if (r.num_retries > 5) return d.set("cluster '{s}': retry.num_retries must be at most 5", .{c.name});
+        }
+    }
 
     for (cfg.route_configs) |rc| {
         try dupName(model.VirtualHost, rc.virtual_hosts, "virtual_host", d);

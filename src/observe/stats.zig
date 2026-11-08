@@ -25,6 +25,10 @@ pub const Counter = enum {
     upstream_cx_idle,
     upstream_rq_total,
     upstream_rq_retry,
+    /// Requests answered 503 because a cluster's circuit breaker was open.
+    upstream_rq_overflow,
+    /// Retries refused by the retry budget or max_retries.
+    upstream_rq_retry_overflow,
     upstream_rq_5xx,
     upstream_rq_timeout,
     upstream_cx_protocol_error,

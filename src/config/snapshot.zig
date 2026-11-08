@@ -34,10 +34,20 @@ pub const Cluster = struct {
     eject_ms: u32,
     consecutive_5xx: u8 = 0,
     max_ejection_percent: u8 = 50,
+    breakers: model.CircuitBreakers = .{},
+    retry: ?Retry = null,
     endpoints: []Endpoint,
     total_weight: u32,
     tls: ?ClientTls,
     proxy_protocol: ?@import("../net/proxy_protocol.zig").Version = null,
+};
+
+pub const Retry = struct {
+    on_5xx: bool,
+    on_gateway_error: bool,
+    on_reset: bool,
+    num_retries: u8,
+    budget_percent: u8,
 };
 
 pub const ClientTls = struct {
@@ -273,6 +283,14 @@ pub fn build(gpa: std.mem.Allocator, cfg: *const model.Config, reg: *Registry, d
             .eject_ms = src.eject_ms,
             .consecutive_5xx = src.consecutive_5xx,
             .max_ejection_percent = src.max_ejection_percent,
+            .breakers = src.circuit_breakers,
+            .retry = if (src.retry) |r| .{
+                .on_5xx = std.mem.indexOfScalar(model.RetryOn, r.retry_on, .@"5xx") != null,
+                .on_gateway_error = std.mem.indexOfScalar(model.RetryOn, r.retry_on, .gateway_error) != null,
+                .on_reset = std.mem.indexOfScalar(model.RetryOn, r.retry_on, .reset) != null,
+                .num_retries = r.num_retries,
+                .budget_percent = r.budget_percent,
+            } else null,
             .endpoints = eps,
             .total_weight = total,
             .tls = null,

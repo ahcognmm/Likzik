@@ -91,6 +91,8 @@ pub const Worker = struct {
     cur: *snapshot.Snapshot,
     pins: rcu_mod.Pins = .{},
     eps: health.Table = .{},
+    /// Per-cluster load for circuit breakers and the retry budget.
+    cluster_load: @import("../upstream/breaker.zig").Table = .{},
     wheel: tw.Wheel,
     now_ms: u64,
     prng: std.Random.DefaultPrng,
@@ -176,6 +178,7 @@ pub const Worker = struct {
         self.dirty_downs.deinit(self.gpa);
         self.dirty_ups.deinit(self.gpa);
         self.eps.deinit(self.gpa);
+        self.cluster_load.deinit(self.gpa);
         self.tunnels.deinit(self.gpa);
         self.ups.deinit(self.gpa);
         self.downs.deinit(self.gpa);
