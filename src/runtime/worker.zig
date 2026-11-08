@@ -19,6 +19,7 @@ const rcu_mod = @import("../config/rcu.zig");
 const snapshot = @import("../config/snapshot.zig");
 const stats_mod = @import("../observe/stats.zig");
 const health = @import("../upstream/health.zig");
+const lb = @import("../upstream/lb.zig");
 const socket = @import("../net/socket.zig");
 const Address = @import("../net/addr.zig").Address;
 const http = @import("../proxy/http.zig");
@@ -412,6 +413,28 @@ pub const Worker = struct {
 
     pub fn unpin(self: *Worker, s: *snapshot.Snapshot) void {
         self.pins.unpin(s);
+    }
+
+    /// Passive health: counts a connect failure or a 5xx from an endpoint
+    /// and ejects it at the cluster's threshold, unless that would pass
+    /// max_ejection_percent.
+    pub fn endpointFailed(self: *Worker, c: *const snapshot.Cluster, ep_id: u32, kind: health.Failure) void {
+        const st = self.eps.get(self.gpa, ep_id) catch return;
+        const threshold = switch (kind) {
+            .connect => c.eject_after_failures,
+            .http_5xx => c.consecutive_5xx,
+        };
+        const count = switch (kind) {
+            .connect => st.consecutive_failures,
+            .http_5xx => st.consecutive_5xx,
+        };
+        // Only look at the whole cluster when this failure could eject.
+        var may = false;
+        if (threshold != 0 and count +| 1 >= threshold) {
+            var ctx: lb.Ctx = .{ .gpa = self.gpa, .eps = &self.eps, .rng = self.prng.random(), .now_ms = self.now_ms };
+            may = lb.mayEject(&ctx, c);
+        }
+        if (st.recordFailure(kind, self.now_ms, threshold, c.eject_ms, may)) self.stats.inc(.endpoint_ejections);
     }
 
     pub fn listenerCfg(self: *Worker, slot: u16) ?*const snapshot.Listener {

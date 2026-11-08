@@ -47,6 +47,7 @@ http { access_log off;
   uwsgi_temp_path $WORK/uwsgi; scgi_temp_path $WORK/scgi;
   server { listen 127.0.0.1:19001; root $WWW; location = / { return 200 "a\n"; } location = /slow { return 200 "a\n"; } }
   server { listen 127.0.0.1:19002; root $WWW; location = / { return 200 "b\n"; } }
+  server { listen 127.0.0.1:19005; location / { return 500 "bad\n"; } }
   server { listen 127.0.0.1:19004 ssl; ssl_certificate $PKI/up.crt; ssl_certificate_key $PKI/up.key;
            root $WWW; location = / { return 200 "tls upstream\n"; } }
 }
@@ -90,10 +91,13 @@ cat > "$WORK/likzik.json" <<JSON
     { "name": "dead", "domains": ["dead.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "dead" } } ] },
     { "name": "tlsup", "domains": ["tlsup.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "tlsup" } } ] },
     { "name": "badtls", "domains": ["badtls.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "badtls" } } ] },
+    { "name": "flaky", "domains": ["flaky.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "flaky" } } ] },
     { "name": "default", "domains": ["*"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "web" } } ] } ] } ],
   "clusters": [
     { "name": "web", "lb_policy": "round_robin", "endpoints": [ { "address": "127.0.0.1:19001" }, { "address": "127.0.0.1:19002" } ] },
     { "name": "echo", "endpoints": [ { "address": "127.0.0.1:19003" } ] },
+    { "name": "flaky", "lb_policy": "round_robin", "consecutive_5xx": 3, "eject_ms": 60000,
+      "endpoints": [ { "address": "127.0.0.1:19002" }, { "address": "127.0.0.1:19005" } ] },
     { "name": "self_https", "endpoints": [ { "address": "127.0.0.1:18444" } ] },
     { "name": "pp_in", "proxy_protocol": "v1", "endpoints": [ { "address": "127.0.0.1:18447" } ] },
     { "name": "dead", "connect_timeout_ms": 300, "endpoints": [ { "address": "127.0.0.1:1" } ] },
@@ -205,6 +209,11 @@ check "broken certificate rejected on reload" "$(curl -s -o /dev/null -w '%{http
 check "old certificate keeps serving" "$(code200 a.test /)" "200"
 cp "$PKI/a.crt.good" "$PKI/a.crt"
 check "tls metrics" "$(curl -s 127.0.0.1:19901/metrics | grep -c '^likzik_tls_handshakes_total ')" "1"
+
+echo "outlier detection"
+for i in $(seq 40); do curl -s -o /dev/null -H 'Host: flaky.test' $P/; done
+check "endpoint returning 5xx is ejected" "$(for i in $(seq 12); do curl -s -H 'Host: flaky.test' $P/; done | sort -u | tr -d '\n')" "b"
+check "ejection counted" "$(curl -s 127.0.0.1:19901/stats | grep -c '^endpoint_ejections: [1-9]')" "1"
 
 echo "proxy protocol"
 xff() { grep -ai '^X-Forwarded-For' | tr -d '\r'; }

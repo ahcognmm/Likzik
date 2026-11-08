@@ -153,6 +153,11 @@ pub const Cluster = struct {
     /// Consecutive connect failures before an endpoint is ejected.
     eject_after_failures: u8 = 3,
     eject_ms: u32 = 10_000,
+    /// Consecutive 5xx responses from one endpoint before it is ejected
+    /// (0 = off). Counted per worker, like connect failures.
+    consecutive_5xx: u8 = 0,
+    /// Never eject more than this share of the cluster's endpoints.
+    max_ejection_percent: u8 = 50,
     tls: ?UpstreamTls = null,
     /// Send a PROXY protocol header with the client's address to the
     /// endpoints. TCP listeners only.

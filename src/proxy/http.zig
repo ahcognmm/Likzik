@@ -745,8 +745,7 @@ fn startUpstream(w: *Worker, di: u32, exclude_first: ?u32) void {
 
 fn recordConnectFailure(w: *Worker, ep_id: u32, c: *const snapshot.Cluster) void {
     w.stats.inc(.upstream_cx_connect_fail);
-    const st = w.eps.get(w.gpa, ep_id) catch return;
-    if (st.recordFailure(w.now_ms, c.eject_after_failures, c.eject_ms)) w.stats.inc(.endpoint_ejections);
+    w.endpointFailed(c, ep_id, .connect);
 }
 
 /// Forwards request body bytes to the upstream. Returns bytes consumed,
@@ -1287,6 +1286,10 @@ fn onRespHead(w: *Worker, di: u32, ui: u32, head: []const u8) bool {
     countStatus(w, resp.status);
     d.log_status = resp.status;
     if (resp.status >= 500) w.stats.inc(.upstream_rq_5xx);
+    // Outlier detection on the endpoint that answered.
+    if (d.cluster) |c| if (d.ep_id) |id| {
+        if (resp.status >= 500) w.endpointFailed(c, id, .http_5xx) else if (w.eps.get(w.gpa, id)) |st| st.recordResponseOk() else |_| {}
+    };
     return d.phase == .exchange;
 }
 

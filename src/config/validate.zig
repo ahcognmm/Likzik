@@ -98,6 +98,8 @@ pub fn validate(cfg: *const model.Config, d: *Diag) error{InvalidConfig}!void {
         }
     }
 
+    for (cfg.clusters) |c| if (c.max_ejection_percent > 100) return d.set("cluster '{s}': max_ejection_percent must be 0..100", .{c.name});
+
     for (cfg.route_configs) |rc| {
         try dupName(model.VirtualHost, rc.virtual_hosts, "virtual_host", d);
         for (rc.virtual_hosts) |vh| {

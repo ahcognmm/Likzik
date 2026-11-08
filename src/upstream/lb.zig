@@ -25,6 +25,17 @@ fn eligible(ctx: *Ctx, e: *const snapshot.Endpoint, exclude: ?u32, panic: bool) 
     return (try ctx.eps.get(ctx.gpa, e.id)).healthy(ctx.now_ms);
 }
 
+/// True when one more endpoint of `c` may be ejected without passing the
+/// cluster's max_ejection_percent (this worker's view).
+pub fn mayEject(ctx: *Ctx, c: *const snapshot.Cluster) bool {
+    var ejected: usize = 0;
+    for (c.endpoints) |*e| {
+        const st = ctx.eps.get(ctx.gpa, e.id) catch return false;
+        if (!st.healthy(ctx.now_ms)) ejected += 1;
+    }
+    return (ejected + 1) * 100 <= c.endpoints.len * c.max_ejection_percent;
+}
+
 pub fn pick(ctx: *Ctx, c: *const snapshot.Cluster, exclude: ?u32) !?*const snapshot.Endpoint {
     const eps = c.endpoints;
     if (eps.len == 1) {

@@ -221,9 +221,7 @@ fn onConnect(w: *Worker, ti: u32, res: i32) void {
     if (res != 0) {
         w.stats.inc(.upstream_cx_connect_fail);
         if (res == -@as(i32, @intFromEnum(linux.E.CANCELED))) w.stats.inc(.upstream_cx_connect_timeout);
-        if (w.eps.get(w.gpa, t.ep_id.?)) |st| {
-            if (st.recordFailure(w.now_ms, c.eject_after_failures, c.eject_ms)) w.stats.inc(.endpoint_ejections);
-        } else |_| {}
+        w.endpointFailed(c, t.ep_id.?, .connect);
         socket.closeFd(t.ufd);
         t.ufd = -1;
         connectNext(w, ti, t.ep_id);
