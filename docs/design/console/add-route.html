@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>Likzik add route</title>
+<script src="65665fba-f5d2-446a-9f02-782cf268ded8"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F4F1EB}
+a{color:#151515}a:hover{color:#3A3A36}
+button,input,select{font:inherit}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #151515;outline-offset:2px}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #F4F1EB; color: #151515; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.5">
+
+<header style="background: #D7F98A; border-bottom: 2px solid #151515; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 8px 16px; min-height: 56px; box-sizing: border-box">
+<button type="button" aria-label="Toggle menu" style="width: 40px; height: 40px; border: 0; background: none; cursor: pointer; display: grid; place-items: center; color: #151515"><svg width="20" height="20" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"></path></svg></button>
+<div style="display: flex; align-items: center; gap: 10px">
+<span aria-hidden="true" style="width: 30px; height: 30px; background: #151515; color: #D7F98A; display: grid; place-items: center; font-family: 'IBM Plex Mono', monospace; font-weight: 700; font-size: 15px">L</span>
+<span style="font-family: 'IBM Plex Mono', monospace; font-weight: 700; font-size: 17px">Likzik</span>
+</div>
+<label style="flex: 0 1 400px; display: flex; align-items: center; gap: 10px; border: 2px solid #151515; background: #F4F1EB; padding: 0 12px; min-height: 40px; box-sizing: border-box">
+<svg width="16" height="16" sc-camel-view-box="0 0 24 24" fill="none" stroke="#151515" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+<span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Search</span>
+<input type="search" placeholder="Search routes, clusters, endpoints..." style="flex: 1 1 auto; min-width: 0; border: 0; background: transparent; color: #151515; outline-offset: 6px">
+</label>
+<div style="margin-left: auto; display: flex; align-items: center; gap: 8px">
+<button type="button" aria-label="Notifications" style="width: 40px; height: 40px; border: 0; background: none; cursor: pointer; display: grid; place-items: center"><svg width="19" height="19" sc-camel-view-box="0 0 24 24" fill="none" stroke="#151515" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg></button>
+<span aria-label="Pham Ngoc Ha" role="img" style="width: 36px; height: 36px; background: #151515; color: #FFFFFF; display: grid; place-items: center; font-size: 13px; font-weight: 600">PH</span>
+</div>
+</header>
+
+<div style="display: flex; flex-wrap: wrap; align-items: stretch">
+
+<nav aria-label="Console" style="flex: 1 1 240px; background: #D7F98A; border-right: 2px solid #151515; padding: 12px; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; min-height: 900px">
+<a href="Status.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; min-height: 44px; box-sizing: border-box; text-decoration: none; font-weight: 500"><svg width="18" height="18" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"></path></svg>Sources and status</a>
+<button type="button" aria-expanded="true" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; min-height: 44px; border: 0; background: none; cursor: pointer; text-align: left; color: #151515; font-weight: 500"><svg width="18" height="18" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="12" r="2"></circle><path d="M6 8v8M8 6h4a4 4 0 0 1 4 4v0"></path></svg><span style="flex: 1 1 auto">Routing</span><span aria-label="{{draftCount}} draft changes" style="background: #151515; color: #FFFFFF; font-size: 12px; font-weight: 600; padding: 0 7px; line-height: 20px">{{draftCount}}</span><svg width="16" height="16" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 15l6-6 6 6"></path></svg></button>
+<a href="Main.dc.html" style="display: flex; align-items: center; padding: 8px 12px 8px 42px; min-height: 40px; box-sizing: border-box; text-decoration: none">Listeners</a>
+<a href="Main.dc.html" aria-current="page" style="display: flex; align-items: center; padding: 8px 12px 8px 42px; min-height: 40px; box-sizing: border-box; text-decoration: none; background: #F4F1EB; font-weight: 600">Routes</a>
+<a href="Main.dc.html" style="display: flex; align-items: center; padding: 8px 12px 8px 42px; min-height: 40px; box-sizing: border-box; text-decoration: none">Clusters</a>
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; min-height: 44px; box-sizing: border-box; text-decoration: none; font-weight: 500"><svg width="18" height="18" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"></path></svg>Certificates</a>
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; min-height: 44px; box-sizing: border-box; text-decoration: none; font-weight: 500"><svg width="18" height="18" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg>Auth providers</a>
+<a href="Publish.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; min-height: 44px; box-sizing: border-box; text-decoration: none; font-weight: 500"><svg width="18" height="18" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M5 20h14"></path></svg>Review and publish</a>
+<div style="margin-top: auto; border-top: 2px solid #151515; padding-top: 14px">
+<p style="margin: 0 0 6px 12px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 500">Resources</p>
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; min-height: 44px; box-sizing: border-box; text-decoration: none; font-weight: 500"><svg width="18" height="18" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h6a2 2 0 0 1 2 2v12a2 2 0 0 0-2-2H4zM20 5h-6a2 2 0 0 0-2 2v12a2 2 0 0 1 2-2h6z"></path></svg>Docs</a>
+</div>
+</nav>
+
+<main style="flex: 999 1 640px; min-width: 0; padding: 32px; box-sizing: border-box; display: flex; flex-direction: column; gap: 20px">
+
+<div>
+<a href="Main.dc.html" style="font-size: 14px; font-weight: 500">Back to routes</a>
+<p style="margin: 16px 0 6px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 500">Routes on public-https</p>
+<h1 style="margin: 0; font-family: 'IBM Plex Mono', monospace; font-size: 40px; line-height: 1.1; font-weight: 700; letter-spacing: -0.02em">Add route</h1>
+<p style="margin: 8px 0 0; max-width: 640px; color: #45443F">The route is added to the draft. Workers only pick it up after you publish.</p>
+</div>
+
+<sc-if value="{{added}}" hint-placeholder-val="{{false}}">
+<section style="background: #D7F98A; border: 2px solid #151515; padding: 24px; display: flex; flex-direction: column; gap: 14px; max-width: 760px">
+<h2 style="margin: 0; font-size: 20px; font-weight: 700">Added to draft</h2>
+<p style="margin: 0"><span style="font-family: 'IBM Plex Mono', monospace; font-weight: 700">{{summary.line}}</span> now sends to <span style="font-family: 'IBM Plex Mono', monospace">{{summary.dest}}</span>. The draft has 4 changes that are not published.</p>
+<div style="display: flex; flex-wrap: wrap; gap: 10px">
+<a href="Publish.dc.html" style="min-height: 44px; display: inline-flex; align-items: center; padding: 0 18px; border: 2px solid #151515; background: #151515; color: #FFFFFF; text-decoration: none; font-weight: 600">Review and publish</a>
+<button type="button" sc-camel-on-click="{{reset}}" style="min-height: 44px; padding: 0 16px; border: 2px solid #151515; background: #F4F1EB; color: #151515; font-weight: 500; cursor: pointer">Add another route</button>
+<a href="Main.dc.html" style="min-height: 44px; display: inline-flex; align-items: center; padding: 0 16px; border: 2px solid #151515; background: #F4F1EB; text-decoration: none; font-weight: 500">Back to routes</a>
+</div>
+</section>
+</sc-if>
+
+<sc-if value="{{editing}}" hint-placeholder-val="{{true}}">
+<div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start">
+
+<form sc-camel-on-submit="{{submit}}" style="flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+
+<section aria-labelledby="s-match" style="background: #EAE6DD; border: 2px solid #151515; padding: 20px; display: flex; flex-direction: column; gap: 18px">
+<div>
+<h2 id="s-match" style="margin: 0; font-size: 18px; font-weight: 600">Which requests</h2>
+<p style="margin: 2px 0 0; font-size: 13px; color: #45443F">On host <span style="font-family: 'IBM Plex Mono', monospace">api.likzik.dev</span>, port 443.</p>
+</div>
+<fieldset style="border: 0; padding: 0; margin: 0">
+<legend style="font-size: 13px; font-weight: 600; margin-bottom: 6px">Methods</legend>
+<div style="display: flex; flex-wrap: wrap; gap: 6px">
+<sc-for list="{{methods}}" as="m" hint-placeholder-count="5">
+<button type="button" aria-pressed="{{m.on}}" sc-camel-on-click="{{m.toggle}}" style="{{m.style}}">{{m.label}}</button>
+</sc-for>
+</div>
+<sc-if value="{{err.methods}}" hint-placeholder-val="{{false}}"><p style="margin: 6px 0 0; font-size: 13px; color: #A3241B; font-weight: 500">Pick at least one method.</p></sc-if>
+</fieldset>
+<div>
+<label for="a-path" style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px">Path</label>
+<input id="a-path" value="{{path}}" sc-camel-on-change="{{setPath}}" autocomplete="off" spellcheck="false" style="{{pathStyle}}">
+<p style="margin: 6px 0 0; font-size: 13px; color: #45443F">Use <span style="font-family: 'IBM Plex Mono', monospace">{name}</span> for one segment, or end with <span style="font-family: 'IBM Plex Mono', monospace">/*</span> to match everything below.</p>
+<sc-if value="{{err.slash}}" hint-placeholder-val="{{false}}"><p style="margin: 6px 0 0; font-size: 13px; color: #A3241B; font-weight: 500">Start the path with a slash, like /v1/refunds.</p></sc-if>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: baseline; font-size: 14px">
+<span style="color: #45443F">Detected match</span>
+<span style="font-size: 12px; padding: 1px 7px; border: 1px solid #151515; background: #F4F1EB; font-weight: 600">{{matchKind}}</span>
+<span style="font-size: 13px; color: #45443F">{{matchHelp}}</span>
+</div>
+</section>
+
+<section aria-labelledby="s-dest" style="background: #EAE6DD; border: 2px solid #151515; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+<h2 id="s-dest" style="margin: 0; font-size: 18px; font-weight: 600">Where they go</h2>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px">
+<sc-for list="{{dests}}" as="d" hint-placeholder-count="3">
+<label style="{{d.style}}"><input type="radio" name="dest" checked="{{d.on}}" sc-camel-on-change="{{d.pick}}" style="margin: 3px 0 0; accent-color: #151515"><span><span style="display: block; font-weight: 600; font-size: 14px">{{d.label}}</span><span style="display: block; font-size: 13px; color: #45443F">{{d.help}}</span></span></label>
+</sc-for>
+</div>
+
+<sc-if value="{{destIs.cluster}}" hint-placeholder-val="{{true}}">
+<fieldset style="border: 0; padding: 0; margin: 0">
+<legend style="font-size: 13px; font-weight: 600; margin-bottom: 6px">Cluster</legend>
+<div style="border: 2px solid #151515; background: #F4F1EB">
+<sc-for list="{{clusters}}" as="c" hint-placeholder-count="5">
+<label style="{{c.style}}"><input type="radio" name="cluster" checked="{{c.on}}" sc-camel-on-change="{{c.pick}}" style="accent-color: #151515"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-weight: 500; flex: 1 1 auto">{{c.name}}</span><span style="{{c.noteStyle}}">{{c.note}}</span></label>
+</sc-for>
+</div>
+<p style="margin: 6px 0 0; font-size: 13px; color: #45443F">Need a new one? <a href="Main.dc.html">Add a cluster</a> first, then come back.</p>
+</fieldset>
+</sc-if>
+<sc-if value="{{destIs.redirect}}" hint-placeholder-val="{{false}}">
+<div style="display: flex; flex-wrap: wrap; gap: 12px">
+<div style="flex: 3 1 260px">
+<label for="a-loc" style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px">Redirect to</label>
+<input id="a-loc" value="https://api.likzik.dev/v2/refunds" sc-camel-on-change="{{noop}}" style="width: 100%; box-sizing: border-box; min-height: 42px; padding: 0 12px; border: 2px solid #151515; background: #F4F1EB; font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #151515">
+</div>
+<div style="flex: 1 1 140px">
+<label for="a-code" style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px">Status</label>
+<sc-raw-select id="a-code" style="width: 100%; min-height: 42px; padding: 0 10px; border: 2px solid #151515; background: #F4F1EB; color: #151515"><option>308 Permanent</option><option>307 Temporary</option></sc-raw-select>
+</div>
+</div>
+</sc-if>
+<sc-if value="{{destIs.direct}}" hint-placeholder-val="{{false}}">
+<div style="display: flex; flex-wrap: wrap; gap: 12px">
+<div style="flex: 1 1 140px">
+<label for="a-st" style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px">Status code</label>
+<input id="a-st" value="200" sc-camel-on-change="{{noop}}" inputmode="numeric" style="width: 100%; box-sizing: border-box; min-height: 42px; padding: 0 12px; border: 2px solid #151515; background: #F4F1EB; font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #151515">
+</div>
+<div style="flex: 3 1 260px">
+<label for="a-body" style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px">Body (optional)</label>
+<input id="a-body" value="" placeholder="Left empty, the response has no body" sc-camel-on-change="{{noop}}" style="width: 100%; box-sizing: border-box; min-height: 42px; padding: 0 12px; border: 2px solid #151515; background: #F4F1EB; font-size: 14px; color: #151515">
+</div>
+</div>
+</sc-if>
+</section>
+
+<section aria-labelledby="s-acc" style="background: #EAE6DD; border: 2px solid #151515; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+<h2 id="s-acc" style="margin: 0; font-size: 18px; font-weight: 600">Access and limits</h2>
+<fieldset style="border: 0; padding: 0; margin: 0">
+<legend style="font-size: 13px; font-weight: 600; margin-bottom: 6px">Who can call it</legend>
+<div style="display: flex; flex-wrap: wrap; border: 2px solid #151515">
+<sc-for list="{{auths}}" as="a" hint-placeholder-count="4">
+<button type="button" aria-pressed="{{a.on}}" sc-camel-on-click="{{a.pick}}" style="{{a.style}}">{{a.label}}</button>
+</sc-for>
+</div>
+<p style="margin: 6px 0 0; font-size: 13px; color: #45443F">{{authHelp}}</p>
+</fieldset>
+<label style="display: flex; gap: 10px; align-items: flex-start; font-size: 14px; font-weight: 600"><input type="checkbox" checked="{{rateOn}}" sc-camel-on-change="{{toggleRate}}" style="margin: 4px 0 0; width: 18px; height: 18px; accent-color: #151515">Limit requests per second</label>
+<sc-if value="{{rateOn}}" hint-placeholder-val="{{true}}">
+<div style="padding-left: 28px">
+<label for="a-rps" style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px">Requests per second</label>
+<input id="a-rps" value="{{rps}}" sc-camel-on-change="{{setRps}}" inputmode="numeric" style="width: 140px; box-sizing: border-box; min-height: 42px; padding: 0 12px; border: 2px solid #151515; background: #F4F1EB; font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #151515">
+<p style="margin: 6px 0 0; font-size: 13px; color: #45443F">{{rpsHelp}}</p>
+</div>
+</sc-if>
+<p style="margin: 0; font-size: 13px; color: #45443F">Timeouts, retries, header rules and mirroring can be set on the route once it is added.</p>
+</section>
+
+<div style="display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end">
+<a href="Main.dc.html" style="min-height: 44px; display: inline-flex; align-items: center; padding: 0 16px; border: 2px solid #151515; background: #F4F1EB; text-decoration: none; font-weight: 500">Cancel</a>
+<sc-if value="{{canAdd}}" hint-placeholder-val="{{true}}">
+<button type="submit" style="min-height: 44px; padding: 0 18px; border: 2px solid #151515; background: #151515; color: #FFFFFF; font-weight: 600; cursor: pointer">Add to draft</button>
+</sc-if>
+<sc-if value="{{cannotAdd}}" hint-placeholder-val="{{false}}">
+<button type="button" disabled="" style="min-height: 44px; padding: 0 18px; border: 2px dashed #6E6B63; background: transparent; color: #45443F; font-weight: 600; cursor: not-allowed">Add to draft</button>
+</sc-if>
+</div>
+</form>
+
+<aside aria-labelledby="pv" style="flex: 1 1 340px; max-width: 420px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+<div style="background: #EAE6DD; border: 2px solid #151515; padding: 20px">
+<h2 id="pv" style="margin: 0 0 12px; font-size: 16px; font-weight: 600">Preview</h2>
+<div style="border: 2px solid #151515; background: #D7F98A; padding: 12px 14px">
+<div style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 700; word-break: break-all">{{summary.line}}</div>
+<ol style="margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px">
+<sc-for list="{{chain}}" as="f" hint-placeholder-count="3">
+<li style="display: flex; gap: 8px; align-items: baseline; font-size: 13px"><span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 700">{{f.n}}</span><span>{{f.label}}</span></li>
+</sc-for>
+</ol>
+</div>
+<div aria-hidden="true" style="width: 2px; height: 18px; background: #151515; margin-left: 24px"></div>
+<div style="border: 2px solid #151515; background: #F4F1EB; padding: 12px 14px">
+<div style="font-size: 12px; color: #45443F">{{summary.destKind}}</div>
+<div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-weight: 500">{{summary.dest}}</div>
+</div>
+</div>
+
+<div style="background: #EAE6DD; border: 2px solid #151515; padding: 20px">
+<h2 style="margin: 0 0 10px; font-size: 16px; font-weight: 600">Overlap with existing routes</h2>
+<sc-if value="{{conflict.none}}" hint-placeholder-val="{{true}}">
+<p style="margin: 0; font-size: 14px; display: flex; gap: 10px; align-items: flex-start"><span style="font-size: 12px; font-weight: 600; padding: 1px 7px; border: 1px solid #256B40; background: #E2F0DE; color: #1E5634">Clear</span>No other route on public-https matches these requests.</p>
+</sc-if>
+<sc-if value="{{conflict.shadow}}" hint-placeholder-val="{{false}}">
+<p style="margin: 0; font-size: 14px; display: flex; gap: 10px; align-items: flex-start"><span style="font-size: 12px; font-weight: 600; padding: 1px 7px; border: 1px solid #8A4A00; background: #FCE7BF; color: #6E3B00">Note</span><span>These requests also match <span style="font-family: 'IBM Plex Mono', monospace">{{conflict.other}}</span>. Your route wins because a more specific path is matched first.</span></p>
+</sc-if>
+<sc-if value="{{conflict.dup}}" hint-placeholder-val="{{false}}">
+<p style="margin: 0; font-size: 14px; display: flex; gap: 10px; align-items: flex-start"><span style="font-size: 12px; font-weight: 600; padding: 1px 7px; border: 1px solid #A3241B; background: #F8E1DE; color: #7E1A13">Clash</span><span><span style="font-family: 'IBM Plex Mono', monospace">{{conflict.other}}</span> already handles {{conflict.methods}} on this path. Edit that route instead, or change the method or path.</span></p>
+</sc-if>
+</div>
+</aside>
+</div>
+</sc-if>
+</main>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script="" data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:1240}}">
+class Component extends DCLogic {
+  renderVals() {
+    const s = this.state || {};
+    const path = s.path != null ? s.path : '/v1/refunds';
+    const picked = s.methods || { POST: true };
+    const dest = s.dest || 'cluster';
+    const cluster = s.cluster || 'payments-svc';
+    const auth = s.auth || 'JWT';
+    const rateOn = s.rateOn != null ? s.rateOn : true;
+    const rps = s.rps != null ? s.rps : '20';
+    const added = !!s.added;
+    const noop = () => {};
+
+    const ALL = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+    const chosen = ALL.filter((m) => picked[m]);
+    const methods = ALL.map((m) => {
+      const on = !!picked[m];
+      return {
+        label: m, on,
+        style: 'min-width: 72px; min-height: 40px; padding: 0 12px; border: 2px solid #151515; cursor: pointer; font-family: \'IBM Plex Mono\', monospace; font-size: 13px; font-weight: 700; background: ' + (on ? '#151515' : '#F4F1EB') + '; color: ' + (on ? '#D7F98A' : '#151515'),
+        toggle: () => this.setState({ methods: Object.assign({}, picked, { [m]: !on }) })
+      };
+    });
+
+    const kind = /\/\*$/.test(path) ? 'Wildcard' : (/\{[^}]+\}/.test(path) ? 'Parameter' : 'Exact');
+    const KH = {
+      Exact: 'Only this exact path.',
+      Parameter: 'One segment can be any value, passed upstream as is.',
+      Wildcard: 'This path and everything below it.'
+    };
+
+    const err = {
+      slash: path.length > 0 && path[0] !== '/' || path.length === 0,
+      methods: chosen.length === 0
+    };
+
+    const EXIST = [
+      { m: ['POST'], p: '/v1/payments' },
+      { m: ['GET'], p: '/v1/payments/{id}' },
+      { m: ['GET', 'POST'], p: '/v1/orders' },
+      { m: ['GET'], p: '/v1/users/{id}' },
+      { m: ALL, p: '/v2/*' },
+      { m: ['GET'], p: '/healthz' }
+    ];
+    const norm = (p) => p.replace(/\{[^}]+\}/g, '{}').replace(/\/$/, '');
+    let conflict = { none: true, shadow: false, dup: false, other: '', methods: '' };
+    for (const e of EXIST) {
+      const overlap = e.m.filter((m) => chosen.indexOf(m) !== -1);
+      if (!overlap.length) continue;
+      if (norm(e.p) === norm(path)) {
+        conflict = { none: false, shadow: false, dup: true, other: e.p, methods: overlap.join(', ') };
+        break;
+      }
+      if (/\/\*$/.test(e.p) && path.indexOf(e.p.slice(0, -1)) === 0 && path !== e.p) {
+        conflict = { none: false, shadow: true, dup: false, other: e.p, methods: overlap.join(', ') };
+      }
+    }
+
+    const DESTS = [
+      ['cluster', 'Send to a cluster', 'Proxy to upstream servers'],
+      ['redirect', 'Redirect', 'Tell the client to go elsewhere'],
+      ['direct', 'Respond directly', 'The gateway answers itself']
+    ];
+    const dests = DESTS.map(([id, label, help]) => {
+      const on = id === dest;
+      return {
+        label, help, on,
+        style: 'display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; cursor: pointer; border: ' + (on ? '2px solid #151515' : '1px solid #B9B4A8') + '; background: ' + (on ? '#D7F98A' : '#F4F1EB'),
+        pick: () => this.setState({ dest: id })
+      };
+    });
+    const destIs = { cluster: dest === 'cluster', redirect: dest === 'redirect', direct: dest === 'direct' };
+
+    const CL = [
+      ['payments-svc', '4 endpoints, 1 ejected', true],
+      ['orders-svc', '3 endpoints', false],
+      ['users-svc', '2 endpoints', false],
+      ['orders-v2', '2 endpoints', false],
+      ['payments-canary', 'New in draft', false]
+    ];
+    const clusters = CL.map(([name, note, warn], i) => {
+      const on = name === cluster;
+      return {
+        name, note, on,
+        style: 'display: flex; align-items: center; gap: 10px; padding: 10px 12px; min-height: 44px; box-sizing: border-box; cursor: pointer; flex-wrap: wrap; ' + (i ? 'border-top: 1px solid #B9B4A8; ' : '') + 'background: ' + (on ? '#D7F98A' : 'transparent'),
+        noteStyle: 'font-size: 12px; ' + (warn ? 'color: #A3241B; font-weight: 600' : 'color: #45443F'),
+        pick: () => this.setState({ cluster: name })
+      };
+    });
+
+    const AUTHS = [['JWT', 'JWT'], ['API key', 'API key'], ['mTLS', 'Client cert'], ['Public', 'Anyone']];
+    const AH = {
+      'JWT': 'Uses the auth.likzik.dev provider. Tokens need the audience of the cluster.',
+      'API key': 'Callers send a key in the X-Api-Key header.',
+      'mTLS': 'Callers present a client certificate; identity comes from its SAN.',
+      'Public': 'No check. Anyone who can reach the gateway can call this route.'
+    };
+    const auths = AUTHS.map(([id, label]) => {
+      const on = id === auth;
+      return {
+        label, on,
+        style: 'flex: 1 1 auto; min-height: 40px; padding: 0 12px; border: 0; cursor: pointer; font-size: 14px; background: ' + (on ? '#151515' : '#F4F1EB') + '; color: ' + (on ? '#FFFFFF' : '#151515') + '; font-weight: ' + (on ? '600' : '400'),
+        pick: () => this.setState({ auth: id })
+      };
+    });
+
+    const n = parseInt(rps, 10);
+    const rpsOk = rateOn ? (n > 0) : true;
+    const rpsHelp = !rateOn ? '' : (n > 0 ? 'Each of the 16 workers allows ' + (Math.round(n / 16 * 10) / 10) + ' per second.' : 'Enter a whole number above zero.');
+
+    const destText = dest === 'cluster' ? cluster : (dest === 'redirect' ? 'https://api.likzik.dev/v2/refunds' : 'HTTP 200 from the gateway');
+    const destKind = dest === 'cluster' ? 'Cluster' : (dest === 'redirect' ? 'Redirect, 308' : 'Direct response');
+    const line = (chosen.length ? chosen.join(', ') : 'No method') + ' ' + (path || '/');
+
+    const chain = [];
+    if (auth === 'JWT') chain.push('Check JWT');
+    if (auth === 'API key') chain.push('Check API key');
+    if (auth === 'mTLS') chain.push('Check client certificate');
+    if (rateOn && n > 0) chain.push('Rate limit, ' + n + ' per second');
+    chain.push(dest === 'cluster' ? 'Forward upstream' : (dest === 'redirect' ? 'Send redirect' : 'Respond'));
+
+    const canAdd = !err.slash && !err.methods && !conflict.dup && rpsOk;
+
+    return {
+      added, editing: !added,
+      draftCount: added ? 4 : 3,
+      path, methods, err, matchKind: kind, matchHelp: KH[kind],
+      pathStyle: 'width: 100%; box-sizing: border-box; min-height: 44px; padding: 0 12px; background: #F4F1EB; font-family: \'IBM Plex Mono\', monospace; font-size: 15px; color: #151515; border: 2px solid ' + ((err.slash || conflict.dup) ? '#A3241B' : '#151515'),
+      setPath: (e) => this.setState({ path: e.target.value }),
+      dests, destIs, clusters, auths, authHelp: AH[auth],
+      rateOn, rps, rpsHelp,
+      toggleRate: () => this.setState({ rateOn: !rateOn }),
+      setRps: (e) => this.setState({ rps: e.target.value }),
+      conflict, chain: chain.map((label, i) => ({ n: String(i + 1), label })),
+      summary: { line, dest: destText, destKind },
+      canAdd, cannotAdd: !canAdd, noop,
+      submit: (e) => { if (e && e.preventDefault) e.preventDefault(); if (canAdd) this.setState({ added: true }); },
+      reset: () => this.setState({ added: false, path: '', methods: { GET: true }, dest: 'cluster', cluster: 'orders-svc', auth: 'JWT', rateOn: false, rps: '' })
+    };
+  }
+}
+</script>
+
+
+</body></html>

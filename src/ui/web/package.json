@@ -1,0 +1,27 @@
+{
+  "name": "likzik-console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Likzik console: the web UI served by likzik-ui",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build && node scripts/embed.mjs",
+    "typecheck": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "5.3.0",
+    "@fontsource/ibm-plex-sans": "5.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "5.2.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.7",
+    "vitest": "3.2.7"
+  }
+}

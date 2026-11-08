@@ -20,7 +20,16 @@ const Address = likzik.net.addr.Address;
 const socket = likzik.net.socket;
 const file_watch = likzik.config.file_watch;
 
-const index_html = @embedFile("index.html");
+/// The React app (src/ui/web), built by Vite and embedded by
+/// web/scripts/embed.mjs. Fonts are bundled too: the page loads nothing
+/// from other origins.
+const web = @import("assets.zig");
+
+const csp = "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src data:; frame-ancestors 'none'; form-action 'none'\r\n";
+
+/// Change history: one entry per publish, holding the version that was
+/// replaced, kept in `<config>.history/` (newest 50).
+const history_max = 50;
 
 pub const std_options: std.Options = .{ .log_level = .info };
 const log = std.log.scoped(.ui);
@@ -155,6 +164,8 @@ const Request = struct {
     path: []const u8,
     auth: ?[]const u8 = null,
     if_match: ?[]const u8 = null,
+    /// X-Likzik-Note: percent-encoded note for the change history.
+    note: ?[]const u8 = null,
     body: []const u8 = "",
 };
 
@@ -217,6 +228,13 @@ fn readRequest(gpa: std.mem.Allocator, fd: linux.fd_t, buf: *std.ArrayList(u8)) 
             if (std.ascii.eqlIgnoreCase(name, "if-match")) req.if_match = std.mem.trim(u8, value, "\"");
         }
     }
+    {
+        var ls = std.mem.splitSequence(u8, h[le + 2 ..], "\r\n");
+        while (ls.next()) |l| {
+            const colon = std.mem.indexOfScalar(u8, l, ':') orelse continue;
+            if (std.ascii.eqlIgnoreCase(l[0..colon], "x-likzik-note")) req.note = std.mem.trim(u8, l[colon + 1 ..], " \t");
+        }
+    }
     req.body = buf.items[head_end.? .. head_end.? + content_length];
     return req;
 }
@@ -227,6 +245,19 @@ fn writeAll(fd: linux.fd_t, data: []const u8) void {
         const n = socket.check(linux.write(fd, data[off..].ptr, data.len - off)) catch return;
         off += n;
     }
+}
+
+/// Static files of the web app. Hashed files under /assets/ are cached
+/// forever; any other path gets index.html (the app routes by #hash).
+fn serveAsset(fd: linux.fd_t, path: []const u8) void {
+    const want = if (std.mem.eql(u8, path, "/")) "/index.html" else path;
+    for (web.assets) |a| if (std.mem.eql(u8, a.path, want)) {
+        const extra = if (a.immutable) "Cache-Control: public, max-age=31536000, immutable\r\n" else csp;
+        return respond(fd, 200, a.mime, extra, a.data);
+    };
+    if (std.mem.startsWith(u8, path, "/assets/")) return respond(fd, 404, "text/plain", "", "not found\n");
+    for (web.assets) |a| if (std.mem.eql(u8, a.path, "/index.html")) return respond(fd, 200, a.mime, csp, a.data);
+    respond(fd, 404, "text/plain", "", "not found\n");
 }
 
 fn respond(fd: linux.fd_t, status: u16, ctype: []const u8, extra: []const u8, body: []const u8) void {
@@ -241,7 +272,8 @@ fn respond(fd: linux.fd_t, status: u16, ctype: []const u8, extra: []const u8, bo
         502 => "Bad Gateway",
         else => "Error",
     };
-    const h = std.fmt.bufPrint(&head, "HTTP/1.1 {d} {s}\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n{s}\r\n", .{ status, reason, ctype, body.len, extra }) catch return;
+    const cache = if (std.mem.indexOf(u8, extra, "Cache-Control:") != null) "" else "Cache-Control: no-store\r\n";
+    const h = std.fmt.bufPrint(&head, "HTTP/1.1 {d} {s}\r\nContent-Type: {s}\r\nContent-Length: {d}\r\n{s}X-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n{s}\r\n", .{ status, reason, ctype, body.len, cache, extra }) catch return;
     writeAll(fd, h);
     writeAll(fd, body);
 }
@@ -272,9 +304,7 @@ fn handle(srv: *Server, fd: linux.fd_t) void {
     const path = if (std.mem.indexOfScalar(u8, req.path, '?')) |q| req.path[0..q] else req.path;
     const get = std.mem.eql(u8, req.method, "GET");
 
-    if (get and (std.mem.eql(u8, path, "/") or std.mem.eql(u8, path, "/index.html"))) {
-        return respond(fd, 200, "text/html; charset=utf-8", "Content-Security-Policy: default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; frame-ancestors 'none'\r\n", index_html);
-    }
+    if (get and !std.mem.startsWith(u8, path, "/api/")) return serveAsset(fd, path);
     if (!std.mem.startsWith(u8, path, "/api/")) return respond(fd, 404, "text/plain", "", "not found\n");
     if (!authorized(srv, &req)) return respond(fd, 401, "application/json", "", "{\"error\":\"unauthorized\"}");
 
@@ -285,6 +315,8 @@ fn handle(srv: *Server, fd: linux.fd_t) void {
     if (std.mem.eql(u8, req.method, "POST") and std.mem.eql(u8, path, "/api/validate")) return validateOnly(srv, fd, req.body);
     if (std.mem.eql(u8, req.method, "PUT") and std.mem.eql(u8, path, "/api/config")) return applyConfig(srv, fd, &req);
     if (std.mem.startsWith(u8, path, "/api/admin/")) return proxyAdmin(srv, fd, req.method, path["/api/admin".len..]);
+    if (get and std.mem.eql(u8, path, "/api/history")) return historyList(srv, fd);
+    if (get and std.mem.startsWith(u8, path, "/api/history/")) return historyGet(srv, fd, path["/api/history/".len..]);
     respond(fd, 404, "application/json", "", "{\"error\":\"not found\"}");
 }
 
@@ -431,6 +463,7 @@ fn applyConfig(srv: *Server, fd: linux.fd_t, req: *const Request) void {
     if (linux.errno(linux.rename(zpath(&p1, cand).?, zpath(&p2, srv.opts.config).?)) != .SUCCESS)
         return respondJson(srv, fd, 500, .{ .ok = false, .message = "cannot replace the config file" });
     log.info("config written ({d} bytes), previous version in {s}", .{ req.body.len, bak });
+    recordHistory(srv, current, req.note orelse "", gen_before);
 
     // Wait for the proxy to pick it up (inotify), up to 3 s.
     const new_etag = etagOf(req.body);
@@ -438,7 +471,7 @@ fn applyConfig(srv: *Server, fd: linux.fd_t, req: *const Request) void {
     while (waited < 30) : (waited += 1) {
         const g = adminGeneration(srv);
         if (gen_before != null and g != null and g.? > gen_before.?)
-            return respondJson(srv, fd, 200, .{ .ok = true, .applied = true, .generation = g.?, .etag = &new_etag, .message = "applied" });
+            return respondJson(srv, fd, 200, .{ .ok = true, .applied = true, .generation = g.?, .previous_generation = gen_before.?, .etag = &new_etag, .message = "applied" });
         const ts: linux.timespec = .{ .sec = 0, .nsec = 100 * std.time.ns_per_ms };
         _ = linux.nanosleep(&ts, null);
     }
@@ -492,4 +525,104 @@ fn proxyAdmin(srv: *Server, fd: linux.fd_t, method: []const u8, path: []const u8
     const body_start = (std.mem.indexOf(u8, out.items, "\r\n\r\n") orelse return respond(fd, 502, "text/plain", "", "")) + 4;
     const ctype = if (std.mem.eql(u8, path, "/server_info")) "application/json" else "text/plain";
     respond(fd, status, ctype, "", out.items[body_start..]);
+}
+
+// ---------------------------------------------------------------- history
+
+fn wallMs() i64 {
+    var ts: linux.timespec = undefined;
+    _ = linux.clock_gettime(.REALTIME, &ts);
+    return @as(i64, @intCast(ts.sec)) * 1000 + @divTrunc(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
+}
+
+fn historyDir(srv: *Server, buf: []u8) ?[]const u8 {
+    return std.fmt.bufPrint(buf, "{s}.history", .{srv.opts.config}) catch null;
+}
+
+const HistoryEntry = struct {
+    id: i64,
+    time_ms: i64,
+    note: []const u8,
+    /// Generation that was live before this change was published.
+    replaced_generation: ?u64,
+    size: usize,
+};
+
+fn decodeNote(gpa: std.mem.Allocator, raw: []const u8) []const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < raw.len and out.items.len < 500) : (i += 1) {
+        if (raw[i] == '%' and i + 2 < raw.len) {
+            if (std.fmt.parseInt(u8, raw[i + 1 .. i + 3], 16)) |c| {
+                out.append(gpa, c) catch break;
+                i += 2;
+                continue;
+            } else |_| {}
+        }
+        out.append(gpa, raw[i]) catch break;
+    }
+    return out.items;
+}
+
+fn readIndex(srv: *Server, arena: std.mem.Allocator) []HistoryEntry {
+    var db: [4096]u8 = undefined;
+    const dir = historyDir(srv, &db) orelse return &.{};
+    var pb: [4096]u8 = undefined;
+    const p = std.fmt.bufPrint(&pb, "{s}/index.json", .{dir}) catch return &.{};
+    const text = file_watch.readFile(arena, p) catch return &.{};
+    return std.json.parseFromSliceLeaky([]HistoryEntry, arena, text, .{ .ignore_unknown_fields = true }) catch &.{};
+}
+
+/// Saves the version being replaced, with the note for this change.
+fn recordHistory(srv: *Server, previous: []const u8, note_raw: []const u8, gen_before: ?u64) void {
+    var arena_state: std.heap.ArenaAllocator = .init(srv.gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var db: [4096]u8 = undefined;
+    const dir = historyDir(srv, &db) orelse return;
+    var zb: [4096]u8 = undefined;
+    _ = linux.mkdir(zpath(&zb, dir) orelse return, 0o700);
+    const id = wallMs();
+    var pb: [4096]u8 = undefined;
+    const vpath = std.fmt.bufPrint(&pb, "{s}/{d}.json", .{ dir, id }) catch return;
+    if (!writeFile(vpath, previous)) return;
+    var entries: std.ArrayList(HistoryEntry) = .empty;
+    entries.append(arena, .{ .id = id, .time_ms = id, .note = decodeNote(arena, note_raw), .replaced_generation = gen_before, .size = previous.len }) catch return;
+    for (readIndex(srv, arena)) |e| {
+        if (entries.items.len < history_max) {
+            entries.append(arena, e) catch break;
+        } else {
+            var ob: [4096]u8 = undefined;
+            const old = std.fmt.bufPrint(&ob, "{s}/{d}.json", .{ dir, e.id }) catch continue;
+            var oz: [4096]u8 = undefined;
+            if (zpath(&oz, old)) |z| _ = linux.unlink(z);
+        }
+    }
+    var out: std.ArrayList(u8) = .empty;
+    out.print(arena, "{f}", .{std.json.fmt(entries.items, .{})}) catch return;
+    var ib: [4096]u8 = undefined;
+    const ipath = std.fmt.bufPrint(&ib, "{s}/index.json", .{dir}) catch return;
+    var tb: [4096]u8 = undefined;
+    const tpath = std.fmt.bufPrint(&tb, "{s}/index.json.tmp", .{dir}) catch return;
+    if (!writeFile(tpath, out.items)) return;
+    var z1: [4096]u8 = undefined;
+    var z2: [4096]u8 = undefined;
+    _ = linux.rename(zpath(&z1, tpath).?, zpath(&z2, ipath).?);
+}
+
+fn historyList(srv: *Server, fd: linux.fd_t) void {
+    var arena_state: std.heap.ArenaAllocator = .init(srv.gpa);
+    defer arena_state.deinit();
+    respondJson(srv, fd, 200, readIndex(srv, arena_state.allocator()));
+}
+
+fn historyGet(srv: *Server, fd: linux.fd_t, id_s: []const u8) void {
+    const id = std.fmt.parseInt(i64, id_s, 10) catch return respondJson(srv, fd, 404, .{ .@"error" = "no such version" });
+    var db: [4096]u8 = undefined;
+    const dir = historyDir(srv, &db) orelse return;
+    var pb: [4096]u8 = undefined;
+    const p = std.fmt.bufPrint(&pb, "{s}/{d}.json", .{ dir, id }) catch return;
+    const text = file_watch.readFile(srv.gpa, p) catch return respondJson(srv, fd, 404, .{ .@"error" = "no such version" });
+    defer srv.gpa.free(text);
+    respondJson(srv, fd, 200, .{ .id = id, .text = text });
 }

@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>Likzik sources and status</title>
+<script src="392b2197-522f-44c2-8e24-a9e888e85e5f"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F4F1EB}
+a{color:#151515}a:hover{color:#3A3A36}
+button,input{font:inherit}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #151515;outline-offset:2px}
+</style>
+</helmet>
+<div style="min-height: 100vh; background: #F4F1EB; color: #151515; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 15px; line-height: 1.5">
+
+<header style="background: #D7F98A; border-bottom: 2px solid #151515; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 8px 16px; min-height: 56px; box-sizing: border-box">
+<button type="button" aria-label="Toggle menu" style="width: 40px; height: 40px; border: 0; background: none; cursor: pointer; display: grid; place-items: center; color: #151515"><svg width="20" height="20" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"></path></svg></button>
+<div style="display: flex; align-items: center; gap: 10px">
+<span aria-hidden="true" style="width: 30px; height: 30px; background: #151515; color: #D7F98A; display: grid; place-items: center; font-family: 'IBM Plex Mono', monospace; font-weight: 700; font-size: 15px">L</span>
+<span style="font-family: 'IBM Plex Mono', monospace; font-weight: 700; font-size: 17px">Likzik</span>
+</div>
+<label style="flex: 0 1 400px; display: flex; align-items: center; gap: 10px; border: 2px solid #151515; background: #F4F1EB; padding: 0 12px; min-height: 40px; box-sizing: border-box">
+<svg width="16" height="16" sc-camel-view-box="0 0 24 24" fill="none" stroke="#151515" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+<span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Search</span>
+<input type="search" placeholder="Search routes, clusters, endpoints..." style="flex: 1 1 auto; min-width: 0; border: 0; background: transparent; color: #151515; outline-offset: 6px">
+</label>
+<div style="margin-left: auto; display: flex; align-items: center; gap: 8px">
+<button type="button" aria-label="Notifications" style="width: 40px; height: 40px; border: 0; background: none; cursor: pointer; display: grid; place-items: center"><svg width="19" height="19" sc-camel-view-box="0 0 24 24" fill="none" stroke="#151515" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg></button>
+<span aria-label="Pham Ngoc Ha" role="img" style="width: 36px; height: 36px; background: #151515; color: #FFFFFF; display: grid; place-items: center; font-size: 13px; font-weight: 600">PH</span>
+</div>
+</header>
+
+<div style="display: flex; flex-wrap: wrap; align-items: stretch">
+
+<nav aria-label="Console" style="flex: 1 1 240px; background: #D7F98A; border-right: 2px solid #151515; padding: 12px; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; min-height: 900px">
+<a href="Status.dc.html" aria-current="page" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; min-height: 44px; box-sizing: border-box; text-decoration: none; font-weight: 600; background: #F4F1EB"><svg width="18" height="18" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"></path></svg>Sources and status</a>
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; min-height: 44px; box-sizing: border-box; text-decoration: none; font-weight: 500"><svg width="18" height="18" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="12" r="2"></circle><path d="M6 8v8M8 6h4a4 4 0 0 1 4 4v0"></path></svg><span style="flex: 1 1 auto">Routing</span><span aria-label="3 draft changes" style="background: #151515; color: #FFFFFF; font-size: 12px; font-weight: 600; padding: 0 7px; line-height: 20px">3</span><svg width="16" height="16" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></a>
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; min-height: 44px; box-sizing: border-box; text-decoration: none; font-weight: 500"><svg width="18" height="18" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"></path></svg>Certificates</a>
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; min-height: 44px; box-sizing: border-box; text-decoration: none; font-weight: 500"><svg width="18" height="18" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg>Auth providers</a>
+<a href="Publish.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; min-height: 44px; box-sizing: border-box; text-decoration: none; font-weight: 500"><svg width="18" height="18" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M5 20h14"></path></svg>Review and publish</a>
+<div style="margin-top: auto; border-top: 2px solid #151515; padding-top: 14px">
+<p style="margin: 0 0 6px 12px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 500">Resources</p>
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; min-height: 44px; box-sizing: border-box; text-decoration: none; font-weight: 500"><svg width="18" height="18" sc-camel-view-box="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h6a2 2 0 0 1 2 2v12a2 2 0 0 0-2-2H4zM20 5h-6a2 2 0 0 0-2 2v12a2 2 0 0 1 2-2h6z"></path></svg>Docs</a>
+</div>
+</nav>
+
+<main style="flex: 999 1 640px; min-width: 0; padding: 32px; box-sizing: border-box; display: flex; flex-direction: column; gap: 20px">
+<div>
+<p style="margin: 0 0 6px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 500">Gateway console</p>
+<h1 style="margin: 0; font-family: 'IBM Plex Mono', monospace; font-size: 40px; line-height: 1.1; font-weight: 700; letter-spacing: -0.02em">Sources and status</h1>
+<p style="margin: 8px 0 0; color: #45443F; max-width: 680px">Every source feeds the same validator. A change that fails validation is rejected and the gateway keeps running the last good generation.</p>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px">
+<section style="background: #EAE6DD; border: 2px solid #151515; padding: 20px">
+<div style="display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap">
+<h2 style="margin: 0; font-size: 16px; font-weight: 600">Control plane (xDS)</h2>
+<span style="font-size: 12px; font-weight: 600; padding: 1px 7px; border: 1px solid #256B40; background: #E2F0DE; color: #1E5634">Connected</span>
+</div>
+<p style="margin: 6px 0 14px; font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 700">istiod.istio-system:15010</p>
+<dl style="margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 20px; font-size: 14px">
+<dt style="color: #45443F">Owns</dt><dd style="margin: 0">Clusters, endpoints, secrets</dd>
+<dt style="color: #45443F">Stream</dt><dd style="margin: 0">One ADS stream, full state each update</dd>
+<dt style="color: #45443F">Last message</dt><dd style="margin: 0">8 s ago</dd>
+</dl>
+</section>
+<section style="background: #EAE6DD; border: 2px solid #151515; padding: 20px">
+<div style="display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap">
+<h2 style="margin: 0; font-size: 16px; font-weight: 600">Config file</h2>
+<span style="font-size: 12px; font-weight: 600; padding: 1px 7px; border: 1px solid #256B40; background: #E2F0DE; color: #1E5634">Watching</span>
+</div>
+<p style="margin: 6px 0 14px; font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 700">/etc/likzik/gateway.yaml</p>
+<dl style="margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 20px; font-size: 14px">
+<dt style="color: #45443F">Owns</dt><dd style="margin: 0">Listeners and routes, edited in this console</dd>
+<dt style="color: #45443F">Reloads</dt><dd style="margin: 0">On save, picked up within a second</dd>
+<dt style="color: #45443F">Last applied</dt><dd style="margin: 0">Generation 41, 22 min ago</dd>
+</dl>
+</section>
+</div>
+
+<section aria-labelledby="ver" style="background: #EAE6DD; border: 2px solid #151515">
+<div style="padding: 18px 20px 6px">
+<h2 id="ver" style="margin: 0; font-size: 16px; font-weight: 600">What each worker is running</h2>
+<p style="margin: 2px 0 0; font-size: 13px; color: #45443F">Versions as the sources sent them. Rejected updates leave the previous version in place.</p>
+</div>
+<div style="overflow-x: auto">
+<sc-raw-table style="width: 100%; border-collapse: collapse; font-size: 14px; min-width: 640px">
+<sc-raw-thead><sc-raw-tr style="text-align: left; font-size: 13px; color: #45443F">
+<sc-raw-th scope="col" style="padding: 10px 20px; font-weight: 500">Resource</sc-raw-th>
+<sc-raw-th scope="col" style="padding: 10px 12px; font-weight: 500">Running version</sc-raw-th>
+<sc-raw-th scope="col" style="padding: 10px 12px; font-weight: 500">Last update</sc-raw-th>
+<sc-raw-th scope="col" style="padding: 10px 20px 10px 12px; font-weight: 500">Result</sc-raw-th>
+</sc-raw-tr></sc-raw-thead>
+<sc-raw-tbody>
+<sc-for list="{{resources}}" as="r" hint-placeholder-count="5">
+<sc-raw-tr style="{{r.rowStyle}}">
+<sc-raw-th scope="row" style="padding: 12px 20px; font-weight: 600; text-align: left">{{r.name}}</sc-raw-th>
+<sc-raw-td style="padding: 12px 12px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-weight: 500">{{r.version}}</sc-raw-td>
+<sc-raw-td style="padding: 12px 12px">{{r.when}}</sc-raw-td>
+<sc-raw-td style="padding: 12px 20px 12px 12px"><span style="{{r.badge}}">{{r.result}}</span></sc-raw-td>
+</sc-raw-tr>
+</sc-for>
+</sc-raw-tbody>
+</sc-raw-table>
+</div>
+<div style="margin: 0 20px 20px; padding: 16px; border: 2px solid #A3241B; background: #F8E1DE">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; align-items: baseline">
+<strong style="color: #7E1A13">Endpoints version 2207 was rejected</strong>
+<button type="button" sc-camel-on-click="{{toggle}}" aria-expanded="{{open}}" style="background: none; border: 0; padding: 6px 0; min-height: 36px; color: #7E1A13; text-decoration: underline; cursor: pointer; font-size: 14px; font-weight: 500">{{toggleLabel}}</button>
+</div>
+<p style="margin: 4px 0 0; font-size: 14px">Cluster <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px">refunds-svc</span> has no endpoints in this version and no cluster of that name exists. Workers stay on version 2206. Fix it in the control plane and it will be retried on the next update.</p>
+<sc-if value="{{open}}" hint-placeholder-val="{{false}}">
+<pre style="margin: 12px 0 0; padding: 12px; background: #F4F1EB; border: 1px solid #151515; font-family: 'IBM Plex Mono', monospace; font-size: 12px; white-space: pre-wrap; overflow-x: auto">error_detail: unknown cluster "refunds-svc" in ClusterLoadAssignment
+nonce: 9f1c
+rejected at: 09:14:22 UTC</pre>
+</sc-if>
+</div>
+</section>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start">
+<section aria-labelledby="drn" style="flex: 1 1 340px; min-width: 0; background: #EAE6DD; border: 2px solid #151515; padding: 20px">
+<h2 id="drn" style="margin: 0 0 4px; font-size: 16px; font-weight: 600">Draining</h2>
+<p style="margin: 0 0 16px; font-size: 13px; color: #45443F">Removed listeners stop accepting and let open connections finish.</p>
+<div style="display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: baseline">
+<span><span style="font-weight: 600">legacy-http</span> <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px">:8080</span></span>
+<span style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 700">{{drainLeft}} left</span>
+</div>
+<div role="progressbar" aria-label="Drain progress for legacy-http" aria-valuenow="{{drainPct}}" aria-valuemin="0" aria-valuemax="100" style="height: 12px; border: 2px solid #151515; background: #F4F1EB"><div style="{{drainBar}}"></div></div>
+<div style="display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center">
+<span style="font-size: 13px; color: #45443F">{{drainNote}}</span>
+<button type="button" sc-camel-on-click="{{closeNow}}" style="min-height: 40px; padding: 0 14px; border: 2px solid #A3241B; background: #F4F1EB; color: #A3241B; font-weight: 500; cursor: pointer">Close remaining now</button>
+</div>
+</div>
+</section>
+
+<section aria-labelledby="hl" style="flex: 2 1 480px; min-width: 0; background: #EAE6DD; border: 2px solid #151515; padding: 20px">
+<h2 id="hl" style="margin: 0 0 4px; font-size: 16px; font-weight: 600">Runtime checks</h2>
+<p style="margin: 0 0 8px; font-size: 13px; color: #45443F">Signals that the fast path is still the fast path. Last 5 minutes across 16 workers.</p>
+<ul style="margin: 0; padding: 0; list-style: none">
+<sc-for list="{{signals}}" as="g" hint-placeholder-count="5">
+<li style="display: flex; flex-wrap: wrap; gap: 4px 16px; justify-content: space-between; align-items: baseline; padding: 10px 0; border-top: 1px solid #B9B4A8">
+<span style="flex: 1 1 260px"><span style="display: block; font-weight: 600; font-size: 14px">{{g.name}}</span><span style="display: block; font-size: 13px; color: #45443F">{{g.help}}</span></span>
+<span style="{{g.valueStyle}}">{{g.value}}</span>
+</li>
+</sc-for>
+</ul>
+</section>
+</div>
+</main>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script="" data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:1080}}">
+class Component extends DCLogic {
+  renderVals() {
+    const s = this.state || {};
+    const open = !!s.open;
+    const closed = !!s.closed;
+
+    const RES = [
+      ['Listeners', 'gen 41 (file)', '22 min ago', 'Applied'],
+      ['Routes', 'gen 41 (file)', '22 min ago', 'Applied'],
+      ['Clusters', '1184', '3 min ago', 'Applied'],
+      ['Endpoints', '2206', '40 s ago', 'Rejected 2207'],
+      ['Secrets', '57', '2 h ago', 'Applied']
+    ];
+    const resources = RES.map(([name, version, when, result]) => {
+      const bad = result.indexOf('Rejected') === 0;
+      return {
+        name, version, when, result,
+        rowStyle: 'border-top: 1px solid #B9B4A8; background: ' + (bad ? '#F8E1DE' : 'transparent'),
+        badge: 'font-size: 12px; font-weight: 600; padding: 1px 7px; ' +
+          (bad ? 'border: 1px solid #A3241B; background: #FFFFFF; color: #7E1A13' : 'border: 1px solid #256B40; background: #E2F0DE; color: #1E5634')
+      };
+    });
+
+    const SIG = [
+      ['TLS handled in the kernel', 'Share of HTTPS connections on kTLS. Anything else falls back to slower userspace TLS.', '100%', false],
+      ['Receive buffers ran out', 'Times a worker had no free buffer for incoming data.', '3', true],
+      ['Upstream connections reused', 'Requests sent on an existing upstream connection.', '97.2%', false],
+      ['Workers on the live generation', 'Workers that have picked up the latest config.', '16 of 16', false],
+      ['Mirrored requests dropped', 'Shadow copies abandoned to protect the real request.', '0.4%', false]
+    ];
+    const signals = SIG.map(([name, help, value, warn]) => ({
+      name, help, value,
+      valueStyle: 'font-family: \'IBM Plex Mono\', monospace; font-size: 18px; font-weight: 700; padding: 0 6px; ' + (warn ? 'background: #FCE7BF; border: 1px solid #8A4A00' : '')
+    }));
+
+    const left = closed ? 0 : 37;
+    const pct = closed ? 100 : 82;
+    return {
+      resources, signals, open,
+      toggleLabel: open ? 'Hide details' : 'Show details',
+      toggle: () => this.setState({ open: !open }),
+      drainLeft: left,
+      drainPct: pct,
+      drainBar: 'height: 100%; width: ' + pct + '%; background: #151515',
+      drainNote: closed ? 'Closed. legacy-http is removed.' : 'Force-closes in 12 s if connections remain.',
+      closeNow: () => this.setState({ closed: true })
+    };
+  }
+}
+</script>
+
+
+</body></html>

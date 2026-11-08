@@ -32,9 +32,10 @@ and path transforms, redirects. It is configured in the config's
 
 ## Dashboard
 
-`likzik-ui` is a small web dashboard in the style of Traefik's: overview
-with live counters, routers, services, middlewares and entrypoints, and
-editing that is validated by the proxy before anything is written. It runs
+`likzik-ui` is the config console: edit listeners, routes, clusters,
+certificates and auth in a draft, review every change, and publish it as
+a new generation after the proxy's own validator accepts it, with change
+history and roll back. It runs
 beside the proxy and needs no changes to it.
 
 ```sh
