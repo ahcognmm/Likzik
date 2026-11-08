@@ -25,7 +25,7 @@ Legend: **done**, **partial**, **not started**.
 | TCP/L4 proxying | done | splice, half-close, idle timeout, connect retry. SNI passthrough and PROXY protocol not started. |
 | File + inotify reload, RCU core | done | Rename-into-place handled; invalid config keeps the old snapshot. |
 | Routing, upstream pools, LB | done | Linear first-match routing for now; the radix trie is gateway-phase. |
-| Within 10% of nginx p99 | on track | Single-host smoke test is at or better than nginx p99 in all workloads; a rigorous multi-host run is still to do (docs/benchmarking.md). |
+| Within 10% of nginx p99 | on track | Single-host smoke test is at or better than nginx p99 in all workloads. The harness now runs the load generator on another host (`LOADGEN=`); the multi-host run itself is still to do (docs/benchmarking.md). |
 
 ## I/O layer
 
@@ -55,7 +55,7 @@ Legend: **done**, **partial**, **not started**.
 | Only kTLS-capable suites | done | TLS 1.3: AES-128/256-GCM, ChaCha20-Poly1305. TLS 1.2: ECDHE with the same AEADs. Min TLS 1.2. |
 | Userspace fallback, guarded | done | Refused unless `"tls": {"require_ktls": false}`; startup warning; `tls_userspace` metric. |
 | Control records (EIO + `TLS_GET_RECORD_TYPE`) | written, untested | On EIO/EKEYEXPIRED from a kTLS socket, `SSL_read` handles the record (OpenSSL's kTLS code does the cmsg read), then the multishot recv is re-armed. |
-| TLS 1.3 KeyUpdate with kTLS | open | Still the plan's open question: whether OpenSSL 3.x installs the new RX key itself. If not, the connection fails closed. |
+| TLS 1.3 KeyUpdate with kTLS | tested on userspace TLS; kTLS run pending | `tests/integration/run.sh` sends client KeyUpdates (`k`) and update requests (`K`) mid-connection and checks later requests are answered. With the `tls` module loaded the suite switches to `require_ktls: true` and also checks that no connection fell back to userspace, which answers the plan's open question on that kernel. |
 | SNI certificate selection | done | Exact, `*.suffix`, default. |
 | ALPN | done | `http/1.1` only; h2 later. |
 | Session tickets: shared key set, rotated by the control plane | partial | Tickets work (one per handshake), with keys per SSL_CTX, which is shared by all workers. Keys change on every reload; explicit key distribution and rotation are not done. |
@@ -146,3 +146,10 @@ the generic filter interface `src/proxy/filter.zig`; gateway code is in
 Harness: `bench/vs_nginx.sh` (single host), `zig build bench-parse`, and
 docs/benchmarking.md with the methodology. The multi-host, fixed-rate run is
 still to do.
+
+## Console and tooling (beyond the plan)
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| Config console (`likzik-ui`) | done | React + Vite app embedded in a Zig server: draft editing of listeners, routes, clusters, certificates and auth; validation with the proxy's own `--check`; change history and roll back. See docs/dashboard.md. |
+| One-command stack | done | `make run` / `likzik-stack` start the gateway and the console together and stop both together. |

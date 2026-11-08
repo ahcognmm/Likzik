@@ -13,7 +13,14 @@
 #   WRK2         path to wrk2 (default: `wrk2` on PATH); the rate section
 #                needs it, the peak sections use wrk
 #
-# This is the quick, single-host harness. For numbers worth publishing,
+#   LOADGEN      run wrk/wrk2 on another host over ssh (e.g. "bench@10.0.0.5"),
+#                as docs/benchmarking.md asks; that host needs wrk and wrk2
+#   TARGET       address the load generator uses to reach this host
+#                (default 127.0.0.1; set it with LOADGEN)
+#   BIND         address the proxies listen on (default 127.0.0.1, or
+#                0.0.0.0 when LOADGEN is set)
+#
+# Without LOADGEN this is the quick, single-host harness. For numbers worth publishing,
 # follow docs/benchmarking.md: separate load-generator hosts, IRQ/RSS
 # pinning, performance governor, fixed offered load.
 set -eu
@@ -21,7 +28,18 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 LIKZIK=${LIKZIK:-$ROOT/zig-out/bin/likzik}
 W=${1:-2}; DUR=${2:-10}; CONNS=${3:-64}
 SECTIONS=${SECTIONS:-"http https rate"}
-WRK2=${WRK2:-$(command -v wrk2 || true)}
+LOADGEN=${LOADGEN:-}
+if [ -n "$LOADGEN" ]; then
+  BIND=${BIND:-0.0.0.0}
+  TARGET=${TARGET:?set TARGET to the address of this host as seen from the load generator}
+  WRK2=${WRK2:-$(ssh "$LOADGEN" 'command -v wrk2' || true)}
+  ssh "$LOADGEN" 'command -v wrk' >/dev/null || { echo "wrk not found on $LOADGEN"; exit 1; }
+else
+  BIND=${BIND:-127.0.0.1}; TARGET=${TARGET:-127.0.0.1}
+  WRK2=${WRK2:-$(command -v wrk2 || true)}
+fi
+# Run the load generator locally, or on $LOADGEN.
+lg() { if [ -n "$LOADGEN" ]; then ssh "$LOADGEN" "$(printf '%q ' "$@")"; else "$@"; fi; }
 has() { [[ " $SECTIONS " == *" $1 "* ]]; }
 
 WORK=$(mktemp -d /tmp/likzik-bench.XXXXXX); chmod 755 "$WORK"
@@ -70,14 +88,14 @@ http { access_log off; keepalive_requests 10000000; $temps
   upstream backend { server 127.0.0.1:29001; keepalive 256; keepalive_requests 10000000; }
   upstream backend_tls { server 127.0.0.1:29002; keepalive 256; keepalive_requests 10000000; }
   proxy_http_version 1.1; proxy_set_header Connection ""; proxy_set_header X-Forwarded-For \$remote_addr;
-  server { listen 127.0.0.1:28081 reuseport backlog=4096; location / { proxy_pass http://backend; } }
-  server { listen 127.0.0.1:28082 ssl reuseport backlog=4096; $nginx_tls
+  server { listen $BIND:28081 reuseport backlog=4096; location / { proxy_pass http://backend; } }
+  server { listen $BIND:28082 ssl reuseport backlog=4096; $nginx_tls
            location / { proxy_pass http://backend; } }
-  server { listen 127.0.0.1:28083 ssl reuseport backlog=4096; $nginx_tls
+  server { listen $BIND:28083 ssl reuseport backlog=4096; $nginx_tls
            location / { proxy_pass https://backend_tls; proxy_ssl_verify on; proxy_ssl_trusted_certificate $WORK/cert.pem;
                         proxy_ssl_name bench.test; proxy_ssl_server_name on; proxy_ssl_session_reuse on; } }
 }
-$( [ -n "$STREAM_MOD" ] && echo "stream { server { listen 127.0.0.1:28444 reuseport; proxy_pass 127.0.0.1:29001; } }" )
+$( [ -n "$STREAM_MOD" ] && echo "stream { server { listen $BIND:28444 reuseport; proxy_pass 127.0.0.1:29001; } }" )
 NGX
 cert='{ "certificates": [ { "certificate_chain": "'$WORK'/cert.pem", "private_key": "'$WORK'/key.pem" } ] }'
 cat > "$WORK/likzik.json" <<JSON
@@ -85,10 +103,10 @@ cat > "$WORK/likzik.json" <<JSON
   "limits": { "max_connections_per_worker": 32768, "max_requests_per_connection": 10000000 },
   "tls": { "require_ktls": $REQUIRE_KTLS },
   "listeners": [
-    { "name": "web", "address": "127.0.0.1:28080", "route_config": "r" },
-    { "name": "tcp", "address": "127.0.0.1:28443", "protocol": "tcp", "cluster": "up" },
-    { "name": "https", "address": "127.0.0.1:28084", "route_config": "r", "tls": $cert },
-    { "name": "https_tls_up", "address": "127.0.0.1:28085", "route_config": "rt", "tls": $cert } ],
+    { "name": "web", "address": "$BIND:28080", "route_config": "r" },
+    { "name": "tcp", "address": "$BIND:28443", "protocol": "tcp", "cluster": "up" },
+    { "name": "https", "address": "$BIND:28084", "route_config": "r", "tls": $cert },
+    { "name": "https_tls_up", "address": "$BIND:28085", "route_config": "rt", "tls": $cert } ],
   "route_configs": [
     { "name": "r", "virtual_hosts": [ { "name": "v", "domains": ["*"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "up" } } ] } ] },
     { "name": "rt", "virtual_hosts": [ { "name": "v", "domains": ["*"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "up_tls" } } ] } ] } ],
@@ -131,7 +149,7 @@ run() {
   local pids c0 c1 k0 k1 out rps p50 p99 err cores us pss kt
   pids=$(pids_of "$proxy")
   c0=$(cpu_ticks "$pids"); k0=$(ktls_tx)
-  out=$(wrk -t2 -c"$CONNS" -d"${DUR}s" --latency "$@" "$url" 2>&1)
+  out=$(lg wrk -t2 -c"$CONNS" -d"${DUR}s" --latency "$@" "$url" 2>&1)
   c1=$(cpu_ticks "$pids"); k1=$(ktls_tx)
   pss=$(pss_kb "$pids")
   rps=$(echo "$out" | awk '/Requests\/sec/ {print $2}'); LAST_RPS=${rps%.*}
@@ -150,7 +168,7 @@ rate() {
   local pids c0 c1 out p50 p99 p999 p9999 got cores us
   pids=$(pids_of "$proxy")
   c0=$(cpu_ticks "$pids")
-  out=$("$WRK2" -t2 -c"$CONNS" -d"${DUR}s" -R"$r" --latency "$@" "$url" 2>&1)
+  out=$(lg "$WRK2" -t2 -c"$CONNS" -d"${DUR}s" -R"$r" --latency "$@" "$url" 2>&1)
   c1=$(cpu_ticks "$pids")
   got=$(echo "$out" | awk '/Requests\/sec/ {print $2}')
   p50=$(echo "$out" | awk '$1=="50.000%" {print $2}')
@@ -173,12 +191,12 @@ if has http; then
   echo "## HTTP (wrk, peak)"; hdr
   for proxy in likzik:28080 nginx:28081; do
     n=${proxy%%:*}; p=${proxy##*:}
-    run "$n" "$n keep-alive" no "http://127.0.0.1:$p/"; PEAK[$n-http]=$LAST_RPS
-    run "$n" "$n new connection" no "http://127.0.0.1:$p/" -H "Connection: close"
-    run "$n" "$n 1 MiB body" no "http://127.0.0.1:$p/1m.bin"
+    run "$n" "$n keep-alive" no "http://$TARGET:$p/"; PEAK[$n-http]=$LAST_RPS
+    run "$n" "$n new connection" no "http://$TARGET:$p/" -H "Connection: close"
+    run "$n" "$n 1 MiB body" no "http://$TARGET:$p/1m.bin"
   done
-  run likzik "likzik tcp passthrough" no "http://127.0.0.1:28443/"
-  [ -n "$STREAM_MOD" ] && run nginx "nginx tcp passthrough" no "http://127.0.0.1:28444/"
+  run likzik "likzik tcp passthrough" no "http://$TARGET:28443/"
+  [ -n "$STREAM_MOD" ] && run nginx "nginx tcp passthrough" no "http://$TARGET:28444/"
   echo
 fi
 
@@ -186,10 +204,10 @@ if has https; then
   echo "## HTTPS (wrk, peak; TLS 1.3, ECDSA P-256)"; hdr
   for proxy in likzik:28084:28085 nginx:28082:28083; do
     IFS=: read -r n p pt <<< "$proxy"
-    run "$n" "$n https keep-alive" yes "https://127.0.0.1:$p/"; PEAK[$n-https]=$LAST_RPS
-    run "$n" "$n https new connection" yes "https://127.0.0.1:$p/" -H "Connection: close"
-    run "$n" "$n https 1 MiB body" yes "https://127.0.0.1:$p/1m.bin"
-    run "$n" "$n https -> https upstream" yes "https://127.0.0.1:$pt/"
+    run "$n" "$n https keep-alive" yes "https://$TARGET:$p/"; PEAK[$n-https]=$LAST_RPS
+    run "$n" "$n https new connection" yes "https://$TARGET:$p/" -H "Connection: close"
+    run "$n" "$n https 1 MiB body" yes "https://$TARGET:$p/1m.bin"
+    run "$n" "$n https -> https upstream" yes "https://$TARGET:$pt/"
   done
   if [ "$KTLS" = yes ]; then
     echo; echo "likzik connection modes: $(curl -s --noproxy '*' http://127.0.0.1:28901/stats | grep -E '^tls_(ktls|userspace):' | tr '\n' ' ')"
@@ -209,11 +227,11 @@ if has rate; then
       r=${RATE:-$(( (a < b ? a : b) * 7 / 10 ))}
       [ "$r" -gt 0 ] || { [ "$kind" = http ] && r=50000 || r=30000; }
       if [ "$kind" = http ]; then
-        rate likzik "likzik keep-alive @ $r" "http://127.0.0.1:28080/" "$r"
-        rate nginx "nginx keep-alive @ $r" "http://127.0.0.1:28081/" "$r"
+        rate likzik "likzik keep-alive @ $r" "http://$TARGET:28080/" "$r"
+        rate nginx "nginx keep-alive @ $r" "http://$TARGET:28081/" "$r"
       else
-        rate likzik "likzik https keep-alive @ $r" "https://127.0.0.1:28084/" "$r"
-        rate nginx "nginx https keep-alive @ $r" "https://127.0.0.1:28082/" "$r"
+        rate likzik "likzik https keep-alive @ $r" "https://$TARGET:28084/" "$r"
+        rate nginx "nginx https keep-alive @ $r" "https://$TARGET:28082/" "$r"
       fi
     done
   fi

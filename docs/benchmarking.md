@@ -114,3 +114,19 @@ run with handshake time included is the right way to judge this.
   NUMA locality.
 - Reference: zoxy-io/benchmark runs nightly comparisons of a Zig io_uring
   proxy against nginx, HAProxy, Envoy and Pingora.
+
+### Running with a separate load generator
+
+`bench/vs_nginx.sh` runs wrk and wrk2 on another host over ssh when
+`LOADGEN` is set. The proxies and upstreams stay on this host; the proxies
+listen on `0.0.0.0` (or `BIND`), the upstreams on loopback.
+
+```sh
+# on the proxy host; the load generator needs wrk and wrk2, and key-based ssh
+LOADGEN=bench@10.0.0.5 TARGET=10.0.0.4 bench/vs_nginx.sh 4 30 256
+LOADGEN=bench@10.0.0.5 TARGET=10.0.0.4 SECTIONS=rate RATE=200000 bench/vs_nginx.sh 4 60 256
+```
+
+This settles the Phase 1 gate (likzik within 10% of nginx p99 at equal
+offered load): run the `rate` section at three or more rates up to the
+point where either proxy's p99 crosses your SLO.

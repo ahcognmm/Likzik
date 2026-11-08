@@ -53,9 +53,13 @@ NGX
 nginx -c "$WORK/up.conf" -p "$WORK" || { echo "nginx failed"; exit 1; }
 python3 "$ROOT/tests/integration/echo_server.py" 19003 >/dev/null 2>&1 & EPID=$!
 
+# With the kernel tls module loaded, run the TLS tests on kTLS for real.
+if [ -r /proc/net/tls_stat ]; then KTLS=true; else KTLS=false; fi
+echo "kTLS available: $KTLS"
+
 cat > "$WORK/likzik.json" <<JSON
 { "version": "it-1", "workers": 2, "admin": { "address": "127.0.0.1:19901" },
-  "tls": { "require_ktls": false },
+  "tls": { "require_ktls": $KTLS },
   "limits": { "header_timeout_ms": 1000 },
   "listeners": [
     { "name": "web", "address": "127.0.0.1:18080", "route_config": "main" },
@@ -155,6 +159,21 @@ check "upstream TLS, verified" "$(S a.test / -H 'Host: tlsup.test')" "tls upstre
 check "3MB via TLS upstream intact" "$(S a.test /big.bin -H 'Host: tlsup.test' | md5sum)" "$BIG_MD5"
 check "upstream cert name mismatch -> 503" "$(S a.test / -H 'Host: badtls.test' -o /dev/null -w '%{http_code}')" "503"
 check "plaintext on TLS port is dropped" "$(printf 'GET / HTTP/1.1\r\nHost: a\r\n\r\n' | timeout 3 nc 127.0.0.1 18444 | head -c 4)" ""
+ku() { # $1 = k (we update our keys) or K (also ask the proxy to update its keys)
+  { printf 'GET /1 HTTP/1.1\r\nHost: echo.test\r\n\r\n'; sleep 0.4; printf '%s\n' "$1"; sleep 0.4
+    printf 'GET /2 HTTP/1.1\r\nHost: echo.test\r\n\r\n'; sleep 0.4; printf '%s\n' "$1"; sleep 0.4
+    printf 'GET /3 HTTP/1.1\r\nHost: echo.test\r\nConnection: close\r\n\r\n'; sleep 0.8; } |
+    timeout 6 openssl s_client -connect 127.0.0.1:18444 -servername a.test -tls1_3 -CAfile "$PKI/ca.crt" 2>&1 |
+    grep -aoE '^GET /[0-9]|KEYUPDATE' | tr '\n' ' '
+}
+# TLS 1.3 KeyUpdate: the client rekeys (proxy must install a new RX key),
+# then asks the proxy to rekey too (new TX key). Requests after each update
+# must still be answered on the same connection.
+check "TLS 1.3 KeyUpdate from client" "$(ku k)" "GET /1 KEYUPDATE GET /2 KEYUPDATE GET /3 "
+check "TLS 1.3 KeyUpdate requested by client" "$(ku K)" "GET /1 KEYUPDATE GET /2 KEYUPDATE GET /3 "
+if [ "$KTLS" = true ]; then
+  check "TLS connections run on kTLS" "$(curl -s 127.0.0.1:19901/stats | grep '^tls_userspace:')" "tls_userspace: 0"
+fi
 mkcert a a.test "DNS:a.test,DNS:*.wild.test"; chmod 644 "$PKI"/*
 kill -HUP "$LPID"; sleep 0.5
 check "certificate hot reload on SIGHUP" "$(fp)" "$(openssl x509 -in "$PKI/a.crt" -noout -fingerprint)"
