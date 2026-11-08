@@ -3,6 +3,7 @@
 //! workers without locks.
 
 const std = @import("std");
+const path_mod = @import("../http1/path.zig");
 const model = @import("model.zig");
 const validate_mod = @import("validate.zig");
 const Address = @import("../net/addr.zig").Address;
@@ -99,8 +100,11 @@ pub const RouteTable = struct {
 
     pub fn select(self: *const RouteTable, host: []const u8, path: []const u8, method: Method) ?*const Route {
         const vh = self.findHost(host) orelse return null;
-        // Match against the path without the query string.
-        const p = if (std.mem.indexOfScalar(u8, path, '?')) |q| path[0..q] else path;
+        // Match against the normalized path (no query string, no dot or
+        // empty segments, unreserved %XX decoded), so "/public/../admin"
+        // cannot reach the /admin upstream through the /public route.
+        var buf: [path_mod.max_len]u8 = undefined;
+        const p = path_mod.normalize(path, &buf) orelse return null;
         for (vh.routes) |*r| if (r.matches(p, method)) return r;
         return null;
     }
@@ -139,6 +143,7 @@ pub const Snapshot = struct {
     require_ktls: bool,
     /// True when any listener or cluster uses TLS.
     uses_tls: bool,
+    access_log: ?model.AccessLog = null,
     /// Compiled `extensions` state, owned by `ext` (see proxy/filter.zig).
     ext: ?*const filter.Extension = null,
     ext_state: ?*anyopaque = null,
@@ -344,6 +349,7 @@ pub fn build(gpa: std.mem.Allocator, cfg: *const model.Config, reg: *Registry, d
         .clusters = clusters,
         .require_ktls = cfg.tls.require_ktls,
         .uses_tls = uses_tls,
+        .access_log = if (cfg.access_log) |al| .{ .path = try a.dupe(u8, al.path), .format = al.format } else null,
     };
     if (cfg.extensions) |ext_cfg| {
         const ext = filter.registered orelse
@@ -398,6 +404,11 @@ test "build and route" {
     try testing.expect(rt.select("api.example.com", "/v1/users", .POST) == null);
     try testing.expect(rt.select("api.example.com", "/healthz", .GET) == null);
     try testing.expectEqualStrings("web", rt.select("other.com", "/anything", .GET).?.cluster.name);
+    // Matching uses the normalized path.
+    try testing.expectEqualStrings("api", rt.select("api.example.com", "/x/../health", .GET).?.cluster.name);
+    try testing.expectEqualStrings("api", rt.select("api.example.com", "//v1/./users", .GET).?.cluster.name);
+    try testing.expectEqualStrings("api", rt.select("api.example.com", "/%68ealth", .GET).?.cluster.name);
+    try testing.expect(rt.select("api.example.com", "/v1/../healthz", .GET) == null);
     try testing.expectEqual(@as(u32, 4), s.clusters[0].total_weight);
     try testing.expectEqualStrings("pg", s.listeners[1].cluster.?.name);
 }

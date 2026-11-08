@@ -61,6 +61,7 @@ cat > "$WORK/likzik.json" <<JSON
 { "version": "it-1", "workers": 2, "admin": { "address": "127.0.0.1:19901" },
   "tls": { "require_ktls": $KTLS },
   "limits": { "header_timeout_ms": 1000 },
+  "access_log": { "path": "$WORK/access.log" },
   "listeners": [
     { "name": "web", "address": "127.0.0.1:18080", "route_config": "main" },
     { "name": "tcp", "address": "127.0.0.1:18443", "protocol": "tcp", "cluster": "web" },
@@ -182,6 +183,16 @@ check "broken certificate rejected on reload" "$(curl -s -o /dev/null -w '%{http
 check "old certificate keeps serving" "$(code200 a.test /)" "200"
 cp "$PKI/a.crt.good" "$PKI/a.crt"
 check "tls metrics" "$(curl -s 127.0.0.1:19901/metrics | grep -c '^likzik_tls_handshakes_total ')" "1"
+
+echo "access log"
+curl -s -o /dev/null -H 'Host: echo.test' "$P/alprobe?q=1"; S a.test /alprobe-tls -H 'Host: echo.test' -o /dev/null
+before=$(grep -c ' "-" 400 ' "$WORK/access.log")
+printf 'BAD\r\n\r\n' | timeout 2 nc 127.0.0.1 18080 >/dev/null; sleep 0.6
+check "proxied request logged" "$(grep -c '"GET /alprobe?q=1 HTTP/1.1" 200 [0-9]* [0-9]*ms echo 127.0.0.1:19003$' "$WORK/access.log")" "1"
+check "https request logged" "$(grep -c '"GET /alprobe-tls HTTP/1.1" 200' "$WORK/access.log")" "1"
+check "unparsable request logged" "$(( $(grep -c ' "-" 400 ' "$WORK/access.log") - before ))" "1"
+check "rejected request keeps its target" "$(grep -q '"POST / HTTP/1.1" 400' "$WORK/access.log" && echo yes)" "yes"
+check "path normalized for routing" "$(code -H 'Host: api.test' --path-as-is $P/x/../v1/a)" "200"
 
 echo "config reload"
 cp "$WORK/likzik.json" "$WORK/good.json"

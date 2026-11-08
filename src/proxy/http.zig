@@ -39,6 +39,10 @@ const tls_backend = @import("../tls/backend.zig");
 const Tls = tls_backend.Tls;
 
 const log = std.log.scoped(.http);
+const access_log = @import("../observe/access_log.zig");
+
+/// Longest request target kept for the access log (longer ones are cut).
+const log_target_max = 512;
 
 /// Send-queue size at which the source side stops reading.
 pub const high_water = 128 * 1024;
@@ -130,6 +134,19 @@ pub const Down = struct {
     /// The extension handled this request: call onResponse with the token.
     ext_active: bool = false,
     ext_token: usize = 0,
+
+    // Access log for the current exchange (only filled when enabled).
+    log_on: bool = false,
+    log_status: u16 = 0,
+    log_method_len: u8 = 0,
+    log_target_len: u16 = 0,
+    log_start_wall: i64 = 0,
+    log_start_ms: u64 = 0,
+    log_bytes: u64 = 0,
+    /// Last endpoint tried (points into the pinned snapshot).
+    log_ep: []const u8 = "",
+    log_method: [16]u8 = undefined,
+    log_target: [log_target_max]u8 = undefined,
 
     fn ip(self: *const Down) []const u8 {
         return self.ip_buf[0..self.ip_len];
@@ -511,12 +528,14 @@ fn startRequest(w: *Worker, di: u32, head: []const u8) void {
     const d = get(w, di);
     w.stats.inc(.downstream_rq_total);
     w.wheel.cancel(&d.timer);
+    logBegin(w, d);
 
     var hs: [parser.max_headers]parser.Header = undefined;
     const req = parser.parseRequest(head, &hs) catch |e| {
         w.stats.inc(.downstream_rq_bad_request);
         return localError(w, di, parser.statusFor(e), true);
     };
+    if (d.log_on) logRequest(d, &req);
     const info = rules.analyzeRequest(&req) catch |e| {
         w.stats.inc(.downstream_rq_bad_request);
         return localError(w, di, parser.statusFor(e), true);
@@ -631,6 +650,7 @@ fn startUpstream(w: *Worker, di: u32, exclude_first: ?u32) void {
         const st = w.eps.get(w.gpa, ep.id) catch unreachable;
         st.active += 1;
         d.ep_id = ep.id;
+        d.log_ep = ep.text;
         d.up = ui;
         const u = upool.get(w, ui);
         u.owner = di;
@@ -1192,6 +1212,7 @@ fn onRespHead(w: *Worker, di: u32, ui: u32, head: []const u8) bool {
     d.resp_head_done = true;
     d.resp = Body.init(info.framing);
     countStatus(w, resp.status);
+    d.log_status = resp.status;
     if (resp.status >= 500) w.stats.inc(.upstream_rq_5xx);
     return d.phase == .exchange;
 }
@@ -1249,6 +1270,7 @@ fn forwardRespBody(w: *Worker, di: u32, data: []const u8, owner: sq.Owner) ?usiz
 fn queueDownHeld(w: *Worker, di: u32, bytes: []const u8, owner: sq.Owner) void {
     const d = get(w, di);
     if (bytes.len > 0 and tryCoalesce(w, &d.out, bytes)) {
+        d.log_bytes += bytes.len;
         markDownDirty(w, di);
         return;
     }
@@ -1263,6 +1285,7 @@ fn queueDown(w: *Worker, di: u32, bytes: []const u8, owner: sq.Owner) void {
         w.releaseOwner(owner);
         return;
     }
+    d.log_bytes += bytes.len;
     d.out.push(&w.segs, .{ .ptr = bytes.ptr, .len = @intCast(bytes.len), .owner = owner }) catch {
         w.releaseOwner(owner);
         closeDown(w, di);
@@ -1341,6 +1364,7 @@ fn finishResponse(w: *Worker, di: u32) void {
 
 fn endExchange(w: *Worker, di: u32) void {
     const d = get(w, di);
+    logEnd(w, d);
     if (d.snap) |s| {
         w.unpin(s);
         d.snap = null;
@@ -1398,7 +1422,10 @@ fn localResponse(w: *Worker, di: u32, status: u16, close: bool, content_type: []
         d.error_close = true;
     }
     if (w.draining) d.keep_alive = false;
-    if (d.phase == .head) d.phase = .exchange; // local response counts as an exchange
+    if (d.phase == .head) {
+        d.phase = .exchange; // local response counts as an exchange
+        if (!d.log_on) logBegin(w, d); // e.g. a timeout before a full head
+    }
     const blk = w.blocks.alloc() orelse {
         closeDown(w, di);
         return;
@@ -1411,11 +1438,58 @@ fn localResponse(w: *Worker, di: u32, status: u16, close: bool, content_type: []
         d.keep_alive = false;
     };
     countStatus(w, status);
+    d.log_status = status;
     if (status == 408 or status == 504) w.stats.inc(.downstream_rq_timeout);
     d.resp_started = true;
     queueDown(w, di, w.blocks.bytes(blk)[0..out.len], .{ .block = blk });
     if (d.phase == .closing) return;
     endExchange(w, di);
+}
+
+// ---------------------------------------------------------------- access log
+
+fn logBegin(w: *Worker, d: *Down) void {
+    d.log_on = w.cur.access_log != null;
+    if (!d.log_on) return;
+    d.log_start_wall = access_log.wallMs();
+    d.log_start_ms = w.now_ms;
+    d.log_status = 0;
+    d.log_bytes = 0;
+    d.log_ep = "";
+    d.log_method_len = 0;
+    d.log_target_len = 0;
+}
+
+fn logRequest(d: *Down, req: *const parser.Request) void {
+    const m = req.method_raw[0..@min(req.method_raw.len, d.log_method.len)];
+    @memcpy(d.log_method[0..m.len], m);
+    d.log_method_len = @intCast(m.len);
+    const t = req.target[0..@min(req.target.len, d.log_target.len)];
+    @memcpy(d.log_target[0..t.len], t);
+    d.log_target_len = @intCast(t.len);
+}
+
+fn logEnd(w: *Worker, d: *Down) void {
+    if (!d.log_on) return;
+    d.log_on = false;
+    const cfg = w.cur.access_log orelse return;
+    const e: access_log.Entry = .{
+        .time_ms = d.log_start_wall,
+        .client = d.ip(),
+        .listener = w.listeners[d.listener].name(),
+        .method = d.log_method[0..d.log_method_len],
+        .target = d.log_target[0..d.log_target_len],
+        .http10 = d.client10,
+        .status = d.log_status,
+        .bytes = d.log_bytes,
+        .duration_ms = w.now_ms -| d.log_start_ms,
+        .cluster = if (d.cluster) |c| c.name else "",
+        .upstream = d.log_ep,
+        .tls = d.tls != null,
+    };
+    var buf: [access_log.max_line]u8 = undefined;
+    if (!w.shared.access_logs[w.id].write(access_log.format(cfg.format, &e, &buf)))
+        w.stats.inc(.access_log_dropped);
 }
 
 // ---------------------------------------------------------------- send
@@ -1506,6 +1580,7 @@ fn beginLinger(w: *Worker, di: u32) void {
 pub fn closeDown(w: *Worker, di: u32) void {
     const d = get(w, di);
     if (d.phase == .closing) return;
+    logEnd(w, d); // an exchange cut short (status "-" if nothing was sent)
     d.phase = .closing;
     w.wheel.cancel(&d.timer);
     detachUp(w, di, true);

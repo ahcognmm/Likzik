@@ -53,6 +53,10 @@ pub fn validate(cfg: *const model.Config, d: *Diag) error{InvalidConfig}!void {
     if (l.header_timeout_ms == 0 or l.idle_timeout_ms == 0) return d.set("timeouts must be > 0", .{});
     if (cfg.workers > 1024) return d.set("workers must be <= 1024", .{});
     if (cfg.admin) |a| _ = Address.parse(a.address) catch return d.set("admin: invalid address '{s}'", .{a.address});
+    if (cfg.access_log) |al| {
+        if (al.path.len == 0) return d.set("access_log.path is empty", .{});
+        if (!dirWritable(al.path)) return d.set("access_log: cannot write to the directory of '{s}'", .{al.path});
+    }
 
     for (cfg.listeners, 0..) |li, i| {
         const a = Address.parse(li.address) catch return d.set("listener '{s}': invalid address '{s}'", .{ li.name, li.address });
@@ -137,4 +141,15 @@ pub fn validate(cfg: *const model.Config, d: *Diag) error{InvalidConfig}!void {
             if (e.weight == 0 or e.weight > 1000) return d.set("cluster '{s}': endpoint weight must be 1..1000", .{c.name});
         }
     }
+}
+
+/// True when the directory that would hold `path` exists and is writable.
+fn dirWritable(path: []const u8) bool {
+    const dir = std.fs.path.dirname(path) orelse ".";
+    var z: [std.fs.max_path_bytes]u8 = undefined;
+    if (dir.len >= z.len) return false;
+    @memcpy(z[0..dir.len], dir);
+    z[dir.len] = 0;
+    const linux = std.os.linux;
+    return linux.errno(linux.access(@ptrCast(&z), linux.W_OK)) == .SUCCESS;
 }

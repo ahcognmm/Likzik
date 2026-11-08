@@ -19,9 +19,17 @@ pub const Config = struct {
     listeners: []const Listener,
     route_configs: []const RouteConfig = &.{},
     clusters: []const Cluster = &.{},
+    access_log: ?AccessLog = null,
     /// Opaque configuration for the binary's extension (e.g. the API
     /// gateway in likzik-gw). The core passes it through unread.
     extensions: ?std.json.Value = null,
+};
+
+pub const AccessLog = struct {
+    /// File the log is appended to. Reopened on every config reload, so
+    /// log rotation is: rename the file, then send SIGHUP.
+    path: []const u8,
+    format: @import("../observe/access_log.zig").Format = .text,
 };
 
 pub const Admin = struct {

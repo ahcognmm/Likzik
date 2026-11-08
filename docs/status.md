@@ -90,7 +90,7 @@ Legend: **done**, **partial**, **not started**.
 | All listed anti-smuggling rules | done. TE accepts exactly `chunked` (501 otherwise). Absolute-form request targets are rejected (400). |
 | Strip hop-by-hop and `Connection`-named headers, replace XFF unless trusted | done (`trust_forwarded_headers` per listener) |
 | Keep-alive idle timeout, max requests per connection | done |
-| Normalize path for routing only | partial: query string is stripped for matching; no percent-decoding/dot-segment normalization yet |
+| Normalize path for routing only | done: core routes and gateway routes match on the same normalized path (unreserved %XX decoded, dot and empty segments removed); the request is forwarded unchanged |
 
 ## Upstream management
 
@@ -137,7 +137,7 @@ the generic filter interface `src/proxy/filter.zig`; gateway code is in
 | --- | --- |
 | Per-worker non-atomic counters, summed on scrape | done |
 | Prometheus `/metrics` | done |
-| Access logs (ring buffer + flusher) | not started |
+| Access logs (ring buffer + flusher) | done: per-worker SPSC rings drained by the control thread; text or JSON; drops counted (`access_log_dropped`); reopened on reload (docs/deployment.md) |
 | Tracing (traceparent, OTLP) | not started |
 | Must-have metrics | ENOBUFS, pool hit rate, snapshot generation per worker, drain state: done. kTLS share: with TLS. |
 

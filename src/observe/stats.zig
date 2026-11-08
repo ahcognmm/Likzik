@@ -46,6 +46,8 @@ pub const Counter = enum {
     /// Bytes copied out of the provided-buffer ring under pressure.
     buffer_ring_copies,
     blocks_exhausted,
+    /// Access log lines dropped because the worker's log ring was full.
+    access_log_dropped,
     snapshot_generation,
     snapshot_swaps,
     draining,

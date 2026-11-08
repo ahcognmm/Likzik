@@ -17,6 +17,7 @@ const ktls = @import("../tls/ktls.zig");
 const build_options = @import("build_options");
 
 const log = std.log.scoped(.control);
+const access_log = @import("../observe/access_log.zig");
 
 pub const Command = enum(u64) { reload = 1, drain = 2, stop = 4 };
 
@@ -40,6 +41,9 @@ pub const Control = struct {
     last_error_len: usize = 0,
     applied_version: [128]u8 = undefined,
     applied_version_len: usize = 0,
+    /// Access log file, reopened whenever a new generation is applied.
+    log_fd: linux.fd_t = -1,
+    log_gen: u64 = 0,
     /// Workers still running (decremented by worker threads on exit).
     alive: *std.atomic.Value(u32),
 
@@ -71,6 +75,7 @@ pub const Control = struct {
     pub fn deinit(self: *Control) void {
         if (self.watcher) |*wt| wt.deinit();
         if (self.admin_fd >= 0) socket.closeFd(self.admin_fd);
+        if (self.log_fd >= 0) socket.closeFd(self.log_fd);
         socket.closeFd(self.cmd_fd);
         self.ring.deinit();
     }
@@ -135,8 +140,27 @@ pub const Control = struct {
             if (self.admin_fd >= 0 and admin_i < n and fds[admin_i].revents != 0) {
                 admin.serveOne(self, self.admin_fd);
             }
+            self.flushAccessLogs();
             _ = self.shared.rcu.reclaim();
         }
+        self.flushAccessLogs();
+    }
+
+    /// Moves every worker's buffered access log lines to the log file.
+    /// The file is reopened for each new generation, so renaming it and
+    /// sending SIGHUP rotates the log.
+    fn flushAccessLogs(self: *Control) void {
+        const snap = self.shared.rcu.load();
+        if (snap.generation != self.log_gen) {
+            self.log_gen = snap.generation;
+            if (self.log_fd >= 0) socket.closeFd(self.log_fd);
+            self.log_fd = -1;
+            if (snap.access_log) |al| {
+                self.log_fd = access_log.open(al.path);
+                if (self.log_fd < 0) log.err("access log: cannot open {s}", .{al.path});
+            }
+        }
+        for (self.shared.access_logs) |*r| _ = r.drain(self.log_fd);
     }
 
     /// Reads, validates and publishes the config file. Returns true when a

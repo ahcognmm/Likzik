@@ -7,6 +7,7 @@ pub const http1 = struct {
     pub const chunked = @import("http1/chunked.zig");
     pub const rules = @import("http1/smuggling_rules.zig");
     pub const codec = @import("http1/codec.zig");
+    pub const path = @import("http1/path.zig");
 };
 
 pub const net = struct {
@@ -73,6 +74,7 @@ pub const control = struct {
 pub const observe = struct {
     pub const stats = @import("observe/stats.zig");
     pub const prometheus = @import("observe/prometheus.zig");
+    pub const access_log = @import("observe/access_log.zig");
 };
 
 pub const rcu = @import("config/rcu.zig");

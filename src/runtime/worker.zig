@@ -43,6 +43,8 @@ pub const Shared = struct {
     pbuf_size: u32 = 16 * 1024,
     /// Each worker's extension state, for the control thread's metrics.
     ext_states: []?*anyopaque = &.{},
+    /// One access log ring per worker (drained by the control thread).
+    access_logs: []@import("../observe/access_log.zig").Ring = &.{},
     pbuf_count: u16 = 256,
     pin_cpus: bool = true,
 };

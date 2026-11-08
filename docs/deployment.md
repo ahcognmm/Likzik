@@ -72,6 +72,32 @@ containing the same rule.
 - `net.core.somaxconn` and `net.ipv4.tcp_max_syn_backlog`: listeners use a
   backlog of 4096. Raise both to at least that.
 
+## Access logs
+
+```json
+"access_log": { "path": "/var/log/likzik/access.log", "format": "text" }
+```
+
+One line per request, written when the response finishes (or the
+connection ends). `format` is `text` (default) or `json`:
+
+```
+2026-11-08T17:40:00.123Z 10.0.0.1 web "GET /v1/users/42 HTTP/1.1" 200 1234 12ms users 10.0.1.10:8000
+```
+
+Fields: start time (UTC), client address, listener, request line (`"-"`
+when it could not be parsed; targets over 512 bytes are cut), status
+(`-` when the client left before a response), bytes sent to the client
+(head and body), duration, cluster and the last endpoint tried. JSON lines
+carry the same fields plus `tls`.
+
+Workers never wait on the disk: each buffers lines in its own 4 MiB
+ring, and the control thread appends them to the file about four times a
+second. If a ring fills up, lines are dropped and counted in
+`access_log_dropped`. The file is reopened on every reload, so to rotate:
+rename the file, then send `SIGHUP` (logrotate: `postrotate kill -HUP
+$(pidof likzik-gw)`; no `copytruncate`).
+
 ## systemd unit
 
 ```ini
