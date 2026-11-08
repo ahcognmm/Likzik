@@ -75,7 +75,7 @@ Legend: **done**, **partial**, **not started**.
 | Zero-copy header slices, max 100, 431 above | done | |
 | Comptime tables, perfect hash, `@Vector` scanning | done | |
 | Snapshot arena, freed after all workers pass | done | |
-| DebugAllocator / ASan / fuzzer in CI | partial | Tests run under debug-mode safety checks. Zig's coverage-guided fuzzer is not usable yet (0.16.0: the test runner fails to compile; 0.17.0: it runs but aborts with "corrupted coverage file: pcs_len was zero"), so a built-in mutation fuzzer drives the same properties (`zig build fuzz -Dfuzz-iters=N`). No CI configured yet. |
+| DebugAllocator / ASan / fuzzer in CI | partial | Tests run under debug-mode safety checks. Zig's coverage-guided fuzzer is not usable yet (0.16.0: the test runner fails to compile; 0.17.0: it runs but aborts with "corrupted coverage file: pcs_len was zero"), so a built-in mutation fuzzer drives the same properties (`zig build fuzz -Dfuzz-iters=N`), covering the HTTP parser, chunked decoder, PROXY protocol and ClientHello parsers. CI (`.github/workflows/ci.yml`) runs it with 2M iterations, plus unit and integration tests. |
 
 ## HTTP/1.1
 
