@@ -56,7 +56,14 @@ python3 "$ROOT/tests/integration/echo_server.py" 19003 >/dev/null 2>&1 & EPID=$!
 
 # With the kernel tls module loaded, run the TLS tests on kTLS for real.
 if [ -r /proc/net/tls_stat ]; then KTLS=true; else KTLS=false; fi
-echo "kTLS available: $KTLS"
+# kTLS key updates need Linux 6.14+; TLS 1.3 kTLS receive needs OpenSSL 3.2+
+# (older versions keep receive in userspace).
+KERNEL=$(uname -r); OSSL=$(openssl version | sed -E 's/.*Library: OpenSSL ([0-9.]+).*/\1/; s/^OpenSSL ([0-9.]+).*/\1/')
+ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
+ver_ge "$KERNEL" 6.14 && KERNEL_REKEY=true || KERNEL_REKEY=false
+ver_ge "$OSSL" 3.2 && OSSL_KTLS_RX=true || OSSL_KTLS_RX=false
+echo "kTLS available: $KTLS (kernel $KERNEL, OpenSSL $OSSL)"
+skip() { echo "  skip $1"; }
 
 cat > "$WORK/likzik.json" <<JSON
 { "version": "it-1", "workers": 2, "admin": { "address": "127.0.0.1:19901" },
@@ -180,9 +187,15 @@ ku() { # $1 = k (we update our keys) or K (also ask the proxy to update its keys
 # then asks the proxy to rekey too (new TX key). Requests after each update
 # must still be answered on the same connection.
 check "TLS 1.3 KeyUpdate from client" "$(ku k)" "GET /1 KEYUPDATE GET /2 KEYUPDATE GET /3 "
-check "TLS 1.3 KeyUpdate requested by client" "$(ku K)" "GET /1 KEYUPDATE GET /2 KEYUPDATE GET /3 "
-if [ "$KTLS" = true ]; then
+if [ "$KTLS" = true ] && [ "$KERNEL_REKEY" = false ]; then
+  skip "TLS 1.3 KeyUpdate requested by client (kTLS send rekey needs Linux 6.14+)"
+else
+  check "TLS 1.3 KeyUpdate requested by client" "$(ku K)" "GET /1 KEYUPDATE GET /2 KEYUPDATE GET /3 "
+fi
+if [ "$KTLS" = true ] && [ "$OSSL_KTLS_RX" = true ]; then
   check "TLS connections run on kTLS" "$(curl -s 127.0.0.1:19901/stats | grep '^tls_userspace:')" "tls_userspace: 0"
+elif [ "$KTLS" = true ]; then
+  skip "TLS connections run on kTLS (OpenSSL $OSSL keeps TLS 1.3 receive in userspace; 3.2+ needed)"
 fi
 mkcert a a.test "DNS:a.test,DNS:*.wild.test"; chmod 644 "$PKI"/*
 kill -HUP "$LPID"; sleep 0.5

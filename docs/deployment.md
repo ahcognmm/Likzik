@@ -39,6 +39,18 @@ OpenSSL build and the negotiated cipher).
 OpenSSL must be built with kTLS (Ubuntu and Debian packages are; when
 building from source, configure with `enable-ktls`).
 
+Versions matter for TLS 1.3:
+
+- **OpenSSL 3.2 or newer** puts both directions in the kernel. OpenSSL
+  3.0 (Ubuntu 24.04) offloads only sending for TLS 1.3, so those
+  connections count as `tls_userspace` and take the slower data path.
+- **Linux 6.14 or newer** can change kTLS keys. On older kernels, a client
+  that asks the server to update its keys (a TLS 1.3 KeyUpdate with
+  `update_requested`) loses the connection, because the kernel cannot
+  take the new sending key. This is why likzik requires 6.14 unless
+  `--allow-old-kernel` is given. CI covers this case and skips it on old
+  kernels.
+
 ## Containers (Docker, containerd, Kubernetes)
 
 Docker's and containerd's default seccomp profiles block `io_uring_setup`,
