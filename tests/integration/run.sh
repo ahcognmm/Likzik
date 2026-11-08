@@ -94,6 +94,8 @@ cat > "$WORK/likzik.json" <<JSON
     { "name": "flaky", "domains": ["flaky.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "flaky" } } ] },
     { "name": "retry5xx", "domains": ["retry5xx.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "retry5xx" } } ] },
     { "name": "retryreset", "domains": ["retryreset.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "retryreset" } } ] },
+    { "name": "mirror", "domains": ["mirror.test"], "routes": [ { "match": { "prefix": "/" },
+      "route": { "cluster": "echo", "mirror": { "cluster": "shadow", "methods": ["GET"] } } } ] },
     { "name": "hc", "domains": ["hc.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "hc" } } ] },
     { "name": "limited", "domains": ["limited.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "limited" } } ] },
     { "name": "default", "domains": ["*"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "web" } } ] } ] } ],
@@ -106,6 +108,7 @@ cat > "$WORK/likzik.json" <<JSON
       "endpoints": [ { "address": "127.0.0.1:19005" }, { "address": "127.0.0.1:19002" } ] },
     { "name": "retryreset", "lb_policy": "round_robin", "retry": { "retry_on": ["reset"] },
       "endpoints": [ { "address": "127.0.0.1:19003" }, { "address": "127.0.0.1:19002" } ] },
+    { "name": "shadow", "connect_timeout_ms": 500, "endpoints": [ { "address": "127.0.0.1:19007" } ] },
     { "name": "hc", "lb_policy": "round_robin",
       "health_check": { "path": "/", "interval_ms": 200, "timeout_ms": 150, "unhealthy_threshold": 2, "healthy_threshold": 1 },
       "endpoints": [ { "address": "127.0.0.1:19002" }, { "address": "127.0.0.1:19005" } ] },
@@ -245,6 +248,15 @@ sleep 1
 check "HTTP check takes a 5xx endpoint out" "$(for i in $(seq 10); do curl -s -H 'Host: hc.test' $P/; done | sort -u | tr -d '\n')" "b"
 check "TCP check marks a refused endpoint unhealthy" "$(curl -s 127.0.0.1:19901/stats | grep '^endpoints_unhealthy:')" "endpoints_unhealthy: 2"
 check "health events logged" "$(grep -c 'is unhealthy' "$WORK/likzik.log")" "2"
+
+echo "mirroring"
+timeout 5 nc -l 127.0.0.1 19007 > "$WORK/shadow.txt" & NCP=$!; sleep 0.3
+check "primary answered while the shadow hangs" "$(curl -s -m 1 -o /dev/null -w '%{http_code}' -H 'Host: mirror.test' $P/mirrored)" "200"
+check "POST with a body is not mirrored" "$(code -m 1 -X POST -d x -H 'Host: mirror.test' $P/notmirrored)" "200"
+wait $NCP 2>/dev/null
+check "shadow got the request" "$(grep -c 'GET /mirrored HTTP/1.1' "$WORK/shadow.txt")" "1"
+check "shadow request is marked" "$(grep -ci '^X-Likzik-Shadow: 1' "$WORK/shadow.txt")" "1"
+check "mirror counted once" "$(curl -s 127.0.0.1:19901/stats | grep '^mirror_requests:')" "mirror_requests: 1"
 
 echo "proxy protocol"
 xff() { grep -ai '^X-Forwarded-For' | tr -d '\r'; }

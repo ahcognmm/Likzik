@@ -147,6 +147,19 @@ pub fn validate(cfg: *const model.Config, d: *Diag) error{InvalidConfig}!void {
                     if (!ok) return d.set("virtual_host '{s}' route {d}: unknown method '{s}'", .{ vh.name, ri, meth });
                 };
                 if (!findCluster(cfg, r.route.cluster)) return d.set("virtual_host '{s}' route {d}: unknown cluster '{s}'", .{ vh.name, ri, r.route.cluster });
+                if (r.route.mirror) |mm| {
+                    const mc = for (cfg.clusters) |*c| {
+                        if (std.mem.eql(u8, c.name, mm.cluster)) break c;
+                    } else return d.set("virtual_host '{s}' route {d}: unknown mirror cluster '{s}'", .{ vh.name, ri, mm.cluster });
+                    if (mc.tls != null or mc.proxy_protocol != null) return d.set("virtual_host '{s}' route {d}: mirror cluster '{s}' must be plain HTTP (no tls or proxy_protocol yet)", .{ vh.name, ri, mm.cluster });
+                    if (mm.percent > 100) return d.set("virtual_host '{s}' route {d}: mirror.percent must be 0..100", .{ vh.name, ri });
+                    for (mm.methods) |meth| {
+                        const known = for (known_methods) |k| {
+                            if (std.mem.eql(u8, k, meth)) break true;
+                        } else false;
+                        if (!known) return d.set("virtual_host '{s}' route {d}: unknown mirror method '{s}'", .{ vh.name, ri, meth });
+                    }
+                }
                 for (cfg.clusters) |c| if (c.proxy_protocol != null and std.mem.eql(u8, c.name, r.route.cluster))
                     return d.set("virtual_host '{s}' route {d}: cluster '{s}' sends PROXY protocol, which only tcp listeners support", .{ vh.name, ri, c.name });
                 if (r.route.prefix_rewrite) |pr| {

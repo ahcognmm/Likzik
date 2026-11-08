@@ -103,7 +103,8 @@ Legend: **done**, **partial**, **not started**.
 | Retries: budgeted, idempotent only, different host | 2 | done: `retry_on` gateway_error / 5xx / reset, budget % of active requests, `max_retries`. Per-try timeouts not started. |
 | Circuit breaking (connections, requests, retries) | 2 | done, per-worker shares of process-wide limits. No pending queue (HTTP/1.1 connects at once). |
 | Active health (TCP/HTTP checks off the workers, results shared) | 2 | done: one checker thread; results in a shared per-endpoint table read by the load balancers. HTTP checks over TLS not started. |
-| Cross-worker handoff, mirroring | 2+ | not started |
+| Request mirroring (core mechanism) | 2 | done for core routes: bodiless requests, sampled, marked, own connections, bounded per worker, response discarded. Body teeing, TLS shadow clusters, per-route shadow metrics and gateway mirror rules not started. |
+| Cross-worker pool handoff | 2 | not started |
 | Ring hash / Maglev | 3 | not started |
 
 ## Dynamic configuration
@@ -133,7 +134,7 @@ the generic filter interface `src/proxy/filter.zig`; gateway code is in
 | Global rate limiting (Envoy RLS) | not started | |
 | Transforms (headers, path rewrite, redirect) | done | Plus fixed responses. Body transforms not started. |
 | Plugins (comptime registry, WASM) | not started | The filter interface is the attachment point. |
-| Mirroring rules | not started | |
+| Mirroring rules | not started | Core mirroring exists for core routes (docs/upstreams.md). |
 
 ## Observability
 

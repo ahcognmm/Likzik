@@ -80,3 +80,27 @@ policy, since nothing reached the upstream.
 
 Breakers protect a struggling cluster from a retry storm or a backlog: a
 fast 503 is better than queueing until timeouts.
+
+## Request mirroring
+
+A core route can send a copy of its requests to a shadow cluster, to try
+a new version on real traffic:
+
+```json
+{ "match": { "prefix": "/v1/" },
+  "route": { "cluster": "users", "mirror": { "cluster": "users-next", "percent": 10, "methods": ["GET", "HEAD"] } } }
+```
+
+- Only requests **without a body** are mirrored, and only the listed
+  methods (default `GET`, `HEAD`); `percent` (default 100) samples them.
+- The copy carries `X-Likzik-Shadow: 1` and `Connection: close`, goes out
+  on its own fresh connection, and its response is discarded (only a 5xx
+  status is counted). It never delays or changes the client's response.
+- Each worker runs at most 256 shadow requests at once, each for at most
+  2 s; past that, copies are dropped rather than queued.
+- Counters: `mirror_requests`, `mirror_dropped`, `mirror_errors`,
+  `mirror_5xx`.
+
+The shadow cluster must be plain HTTP (no TLS or PROXY protocol yet).
+Mirroring is configured on core routes; gateway routes do not have it
+yet.

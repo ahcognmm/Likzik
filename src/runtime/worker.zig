@@ -26,13 +26,14 @@ const http = @import("../proxy/http.zig");
 const upool = @import("../upstream/pool.zig");
 const tcp = @import("../l4/tcp_proxy.zig");
 const filter = @import("../proxy/filter.zig");
+const mirror = @import("../proxy/mirror.zig");
 
 const log = std.log.scoped(.worker);
 
 pub const buffer_group: u16 = 0;
 pub const max_listeners = 64;
 
-pub const TimerKind = enum(u8) { down = 1, up = 2, tunnel = 3 };
+pub const TimerKind = enum(u8) { down = 1, up = 2, tunnel = 3, shadow = 4 };
 
 /// Process-wide state shared between main, the control thread and workers.
 pub const Shared = struct {
@@ -90,6 +91,7 @@ pub const Worker = struct {
     downs: Pool(http.Down),
     ups: Pool(upool.Up),
     tunnels: Pool(tcp.Tunnel),
+    shadows: Pool(mirror.Shadow),
     listeners: [max_listeners]WListener = @splat(.{}),
     cur: *snapshot.Snapshot,
     pins: rcu_mod.Pins = .{},
@@ -143,6 +145,7 @@ pub const Worker = struct {
             .downs = undefined,
             .ups = undefined,
             .tunnels = undefined,
+            .shadows = undefined,
             .cur = snap,
             .wheel = tw.Wheel.init(now),
             .now_ms = now,
@@ -161,6 +164,7 @@ pub const Worker = struct {
         self.ups = try Pool(upool.Up).init(gpa, max_conns);
         errdefer self.ups.deinit(gpa);
         self.tunnels = try Pool(tcp.Tunnel).init(gpa, max_conns);
+        self.shadows = try Pool(mirror.Shadow).init(gpa, mirror.max_in_flight);
         if (filter.registered) |ext| {
             self.ext_ws = try ext.initWorker(gpa, id, @intCast(shared.stats.len));
             if (id < shared.ext_states.len) @atomicStore(?*anyopaque, &shared.ext_states[id], self.ext_ws, .release);
@@ -183,6 +187,7 @@ pub const Worker = struct {
         self.eps.deinit(self.gpa);
         self.cluster_load.deinit(self.gpa);
         self.tunnels.deinit(self.gpa);
+        self.shadows.deinit(self.gpa);
         self.ups.deinit(self.gpa);
         self.downs.deinit(self.gpa);
         self.segs.deinit(self.gpa);
@@ -268,6 +273,7 @@ pub const Worker = struct {
             .u_send => http.onUpSend(self, u.idx, cqe),
             .t_in_d, .t_in_u, .t_out_d, .t_out_u, .t_connect, .t_pre => tcp.onEvent(self, u, cqe),
             .d_pre => http.onDownPreamble(self, u.idx, cqe),
+            .m_connect, .m_send, .m_read => mirror.onEvent(self, u, cqe),
             .d_tls_in => http.onDownTlsEvent(self, u.idx, true, cqe),
             .d_tls_out => http.onDownTlsEvent(self, u.idx, false, cqe),
             .u_tls_in => http.onUpTlsEvent(self, u.idx, true, cqe),
@@ -304,6 +310,7 @@ pub const Worker = struct {
                 .down => if (self.downs.valid(r.idx, r.gen)) http.maybeFreeDown(self, r.idx),
                 .up => if (self.ups.valid(r.idx, r.gen)) upool.maybeFree(self, r.idx),
                 .tunnel => if (self.tunnels.valid(r.idx, r.gen)) tcp.maybeFree(self, r.idx),
+                .shadow => if (self.shadows.valid(r.idx, r.gen)) mirror.maybeFree(self, r.idx),
             }
         }
         self.reap.clearRetainingCapacity();
@@ -352,7 +359,7 @@ pub const Worker = struct {
             for (list.items) |k| switch (k.kind) {
                 .down => if (self.downs.valid(k.idx, k.gen)) http.tlsReadDown(self, k.idx),
                 .up => if (self.ups.valid(k.idx, k.gen)) http.tlsReadUp(self, k.idx),
-                .tunnel => {},
+                .tunnel, .shadow => {},
             };
             list.deinit(self.gpa);
         }
@@ -379,6 +386,7 @@ pub const Worker = struct {
                 .down => if (self.downs.valid(t.idx, t.gen)) http.onDownTimer(self, t.idx),
                 .up => if (self.ups.valid(t.idx, t.gen)) upool.onTimer(self, t.idx),
                 .tunnel => if (self.tunnels.valid(t.idx, t.gen)) tcp.onTimer(self, t.idx),
+                .shadow => if (self.shadows.valid(t.idx, t.gen)) mirror.onTimer(self, t.idx),
             }
         }
         // Re-arm accepts that failed transiently (EMFILE and friends).
@@ -580,9 +588,10 @@ pub const Worker = struct {
     fn shutdownAll(self: *Worker) void {
         upool.closeAll(self);
         var spins: u32 = 0;
-        while (spins < 200 and (self.downs.inUse() > 0 or self.ups.inUse() > 0 or self.tunnels.inUse() > 0)) : (spins += 1) {
+        while (spins < 200 and (self.downs.inUse() > 0 or self.ups.inUse() > 0 or self.tunnels.inUse() > 0 or self.shadows.inUse() > 0)) : (spins += 1) {
             http.closeAll(self);
             tcp.closeAll(self);
+            mirror.closeAll(self);
             upool.closeAll(self);
             // With DEFER_TASKRUN, completions only run inside an enter with
             // GETEVENTS; submit_and_wait(0) would not pass that flag.

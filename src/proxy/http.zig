@@ -42,6 +42,7 @@ const log = std.log.scoped(.http);
 const access_log = @import("../observe/access_log.zig");
 const pp = @import("../net/proxy_protocol.zig");
 const breaker = @import("../upstream/breaker.zig");
+const mirror = @import("mirror.zig");
 
 /// Longest request target kept for the access log (longer ones are cut).
 const log_target_max = 512;
@@ -664,6 +665,7 @@ fn startRequest(w: *Worker, di: u32, head: []const u8) void {
     var target: ?[]const u8 = null;
     var route_rewrite: ?[]const u8 = null;
     var route_path_len: usize = 0;
+    var route_mirror: ?snapshot.RouteMirror = null;
     if (ext_out.cluster) |c| {
         d.cluster = c;
         d.timeout_ms = if (ext_out.timeout_ms != 0) ext_out.timeout_ms else 60_000;
@@ -677,6 +679,7 @@ fn startRequest(w: *Worker, di: u32, head: []const u8) void {
         d.timeout_ms = route.timeout_ms;
         route_rewrite = route.prefix_rewrite;
         route_path_len = route.path.len;
+        route_mirror = route.mirror;
         if (ext_out.target) |t| target = t;
     }
     d.snap = w.pinCurrent() orelse return localError(w, di, 503, true);
@@ -712,8 +715,38 @@ fn startRequest(w: *Worker, di: u32, head: []const u8) void {
     };
     d.head_block = blk;
     d.head_len = @intCast(out.len);
+    if (route_mirror) |m| if (info.framing == .none and (m.methods & snapshot.methodBit(req.method)) != 0 and
+        (m.percent >= 100 or w.prng.random().uintLessThan(u8, 100) < m.percent))
+    {
+        startMirror(w, di, m.cluster, &req, &info, target, lcfg.trust_forwarded_headers, ext_out.remove, ext_out.add);
+    };
     w.schedule(&d.timer, .down, di, gen(w, di), d.timeout_ms);
     startUpstream(w, di, null);
+}
+
+/// Serializes the shadow copy (marked, Connection: close) and hands it to
+/// the mirror. Any shortage drops the copy, never the request.
+fn startMirror(w: *Worker, di: u32, c: *const snapshot.Cluster, req: *const parser.Request, info: *const rules.RequestInfo, target: ?[]const u8, trusted: bool, remove: []const []const u8, add: []const codec.Edit) void {
+    const d = get(w, di);
+    var edits: [34]codec.Edit = undefined;
+    if (add.len + 2 > edits.len) return w.stats.inc(.mirror_dropped);
+    @memcpy(edits[0..add.len], add);
+    edits[add.len] = .{ .name = "X-Likzik-Shadow", .value = "1" };
+    edits[add.len + 1] = .{ .name = "Connection", .value = "close" };
+    const blk = w.blocks.alloc() orelse return w.stats.inc(.mirror_dropped);
+    var out: codec.Out = .{ .buf = w.blocks.bytes(blk) };
+    codec.writeRequest(&out, req, info, .{
+        .client_ip = d.ip(),
+        .proto = if (d.tls != null) "https" else "http",
+        .trusted_client = trusted,
+        .target = target,
+        .remove = remove,
+        .add = edits[0 .. add.len + 2],
+    }) catch {
+        w.blocks.unref(blk);
+        return w.stats.inc(.mirror_dropped);
+    };
+    mirror.start(w, c, blk, out.len);
 }
 
 /// Picks an endpoint and binds an upstream connection to the exchange.

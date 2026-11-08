@@ -29,6 +29,11 @@ pub const Counter = enum {
     upstream_rq_overflow,
     /// Retries refused by the retry budget or max_retries.
     upstream_rq_retry_overflow,
+    /// Shadow requests sent, dropped (no slot), failed, and answered 5xx.
+    mirror_requests,
+    mirror_dropped,
+    mirror_errors,
+    mirror_5xx,
     upstream_rq_5xx,
     upstream_rq_timeout,
     upstream_cx_protocol_error,

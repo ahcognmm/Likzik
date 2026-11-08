@@ -67,6 +67,7 @@ pub const Route = struct {
     cluster: *Cluster,
     prefix_rewrite: ?[]const u8,
     timeout_ms: u32,
+    mirror: ?RouteMirror = null,
 
     pub fn matches(self: *const Route, path: []const u8, method: Method) bool {
         if (self.methods != 0 and (self.methods & methodBit(method)) == 0) return false;
@@ -75,6 +76,13 @@ pub const Route = struct {
             .prefix => std.mem.startsWith(u8, path, self.path),
         };
     }
+};
+
+pub const RouteMirror = struct {
+    cluster: *Cluster,
+    percent: u8,
+    /// Bit per parser.Method.
+    methods: u16,
 };
 
 pub fn methodBit(m: Method) u16 {
@@ -351,6 +359,11 @@ pub fn build(gpa: std.mem.Allocator, cfg: *const model.Config, reg: *Registry, d
                     .cluster = findC(clusters, sr.route.cluster),
                     .prefix_rewrite = if (sr.route.prefix_rewrite) |p| try a.dupe(u8, p) else null,
                     .timeout_ms = sr.route.timeout_ms,
+                    .mirror = if (sr.route.mirror) |mm| blk: {
+                        var mmask: u16 = 0;
+                        for (mm.methods) |m| mmask |= methodBit(Method.parse(m));
+                        break :blk .{ .cluster = findC(clusters, mm.cluster), .percent = mm.percent, .methods = mmask };
+                    } else null,
                 };
             }
             dvh.* = .{ .name = try a.dupe(u8, svh.name), .exact = exact.items, .suffixes = suffixes.items, .any = any, .routes = routes };

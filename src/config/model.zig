@@ -137,6 +137,16 @@ pub const RouteAction = struct {
     prefix_rewrite: ?[]const u8 = null,
     /// Time allowed for the upstream to start responding.
     timeout_ms: u32 = 60_000,
+    /// Send a copy of matching requests to another cluster.
+    mirror: ?Mirror = null,
+};
+
+pub const Mirror = struct {
+    cluster: []const u8,
+    /// Share of matching requests that are mirrored.
+    percent: u8 = 100,
+    /// Only requests without a body are ever mirrored.
+    methods: []const []const u8 = &.{ "GET", "HEAD" },
 };
 
 pub const LbPolicy = enum { round_robin, least_request, random };
