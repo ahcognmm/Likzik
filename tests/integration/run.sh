@@ -208,8 +208,10 @@ ku() { # $1 = k (we update our keys) or K (also ask the proxy to update its keys
 # then asks the proxy to rekey too (new TX key). Requests after each update
 # must still be answered on the same connection.
 check "TLS 1.3 KeyUpdate from client" "$(ku k)" "GET /1 KEYUPDATE GET /2 KEYUPDATE GET /3 "
-if [ "$KTLS" = true ] && [ "$KERNEL_REKEY" = false ]; then
-  skip "TLS 1.3 KeyUpdate requested by client (kTLS send rekey needs Linux 6.14+)"
+if [ "$KTLS" = true ] && { [ "$KERNEL_REKEY" = false ] || [ "$OSSL_KTLS_RX" = false ]; }; then
+  # Seen in CI (Linux 7.0, OpenSSL 3.0): with kTLS sending, OpenSSL 3.0
+  # cannot answer a KeyUpdate request and the connection closes.
+  skip "TLS 1.3 KeyUpdate requested by client (kTLS send rekey needs Linux 6.14+ and OpenSSL 3.2+; untested there)"
 else
   check "TLS 1.3 KeyUpdate requested by client" "$(ku K)" "GET /1 KEYUPDATE GET /2 KEYUPDATE GET /3 "
 fi
