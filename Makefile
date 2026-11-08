@@ -25,7 +25,7 @@ WEB_SRC := $(shell find $(WEB)/src -type f 2>/dev/null) \
            $(WEB)/index.html $(WEB)/package.json $(WEB)/vite.config.ts \
            $(WEB)/tsconfig.json $(WEB)/scripts/embed.mjs
 
-.PHONY: all build ui ui-force deps zig run run-gw ui-dev test test-zig test-ui \
+.PHONY: all build ui ui-force deps zig run run-gw ui-dev test test-zig test-ui integration \
         check-config install uninstall dist clean help
 
 all: build
@@ -83,6 +83,11 @@ check-config: zig
 
 ## test: unit tests for the proxy and the UI model
 test: test-zig test-ui
+
+## integration: end-to-end tests (needs nginx, curl, nc, python3, openssl)
+integration: zig
+	tests/integration/run.sh
+	tests/integration/gateway.sh
 
 test-zig:
 	$(ZIG) build test

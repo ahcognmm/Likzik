@@ -4,6 +4,7 @@
 #
 #   zig build -Doptimize=safe && tests/integration/run.sh
 #   LIKZIK=path/to/likzik tests/integration/run.sh   (e.g. a Debug build)
+#   LIKZIK_ARGS="--allow-old-kernel" tests/integration/run.sh   (CI runners on older kernels)
 set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 LIKZIK=${LIKZIK:-$ROOT/zig-out/bin/likzik}
@@ -86,7 +87,7 @@ cat > "$WORK/likzik.json" <<JSON
 JSON
 
 "$LIKZIK" -c "$WORK/likzik.json" --check >/dev/null 2>&1 && ok "--check accepts the config" || bad "--check"
-"$LIKZIK" -c "$WORK/likzik.json" --no-pin > "$WORK/likzik.log" 2>&1 & LPID=$!
+"$LIKZIK" -c "$WORK/likzik.json" --no-pin ${LIKZIK_ARGS:-} > "$WORK/likzik.log" 2>&1 & LPID=$!
 for _ in $(seq 50); do curl -s -o /dev/null 127.0.0.1:19901/ready && break; sleep 0.1; done
 P=127.0.0.1:18080
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }

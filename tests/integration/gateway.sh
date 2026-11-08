@@ -79,7 +79,7 @@ JSON
 
 check "plain likzik refuses an extensions section" "$("$CORE" -c "$WORK/gw.json" --check 2>&1 | grep -c 'use likzik-gw')" "1"
 check "likzik-gw --check accepts the config" "$("$GW" -c "$WORK/gw.json" --check >/dev/null 2>&1; echo $?)" "0"
-"$GW" -c "$WORK/gw.json" --no-pin > "$WORK/gw.log" 2>&1 & LPID=$!
+"$GW" -c "$WORK/gw.json" --no-pin ${LIKZIK_ARGS:-} > "$WORK/gw.log" 2>&1 & LPID=$!
 for _ in $(seq 50); do curl -s -o /dev/null 127.0.0.1:19911/ready && break; sleep 0.1; done
 P=127.0.0.1:18180
 first() { curl -s "$@" | head -1 | tr -d '\r'; }

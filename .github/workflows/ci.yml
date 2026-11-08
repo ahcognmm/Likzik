@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main, phase1-core]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  proxy:
+    name: Proxy and gateway
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libssl-dev nginx netcat-openbsd curl openssl python3
+          sudo systemctl stop nginx || true
+
+      - name: Unit tests (debug, safety checks on)
+        run: zig build test
+
+      - name: Mutation fuzzer
+        run: zig build fuzz -Dfuzz-iters=2000000
+
+      - name: Build (ReleaseSafe)
+        run: zig build -Doptimize=safe
+
+      # GitHub's runners have an older kernel than the 6.14 likzik asks
+      # for; --allow-old-kernel runs on 6.1+ for testing.
+      - name: Integration tests (core)
+        run: LIKZIK_ARGS=--allow-old-kernel tests/integration/run.sh
+
+      - name: Integration tests (gateway)
+        run: LIKZIK_ARGS=--allow-old-kernel tests/integration/gateway.sh
+
+      - name: Config examples validate
+        run: zig-out/bin/likzik-gw -c config/dev.json --check
+
+  ui:
+    name: Console UI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: src/ui/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/ui/web/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+      - run: npm run build
+
+      # The built app is committed (zig build embeds it without Node), so
+      # it must match the sources.
+      - name: Committed build is up to date
+        run: |
+          git status --porcelain -- dist ../assets.zig
+          git diff --exit-code -- dist ../assets.zig || {
+            echo "::error::src/ui/web/dist or src/ui/assets.zig is stale: run 'npm run build' in src/ui/web and commit the result"
+            exit 1
+          }
+          test -z "$(git status --porcelain -- dist)"
