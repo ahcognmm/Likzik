@@ -2,3 +2,5 @@
 zig-out/
 node_modules/
 src/ui/web/tsconfig.tsbuildinfo
+.run/
+dist/

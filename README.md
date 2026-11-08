@@ -8,6 +8,29 @@ upstream TLS, kTLS-first) and TCP/L4 proxying, file-based config with hot
 reload, graceful drain, metrics. xDS and the gateway filters are not built
 yet; see [docs/status.md](docs/status.md) for the plan-by-plan breakdown.
 
+## Quick start
+
+```sh
+make          # build likzik, likzik-gw, likzik-ui (UI embedded) and likzik-stack
+make run      # gateway on :8080 + config console on http://127.0.0.1:9902/
+```
+
+`make run` starts the gateway and the console together with
+`likzik-stack`, on a working copy of `config/dev.json` in `.run/` (the
+console edits the file it runs on). Ctrl-C stops both; the gateway drains
+first. Use your own config with `make run CONFIG=path.json`, pass gateway
+flags with `GW_ARGS="--workers 4"`, and see `make help` for the rest
+(`test`, `install`, `dist`, `ui-dev`). Node is only needed to change the
+UI; the built UI is committed.
+
+Outside the repo, run the same stack directly:
+
+```sh
+likzik-stack -c /etc/likzik/likzik.json                       # gateway + console
+likzik-stack -c cfg.json -l 0.0.0.0:9902 --token "$TOKEN"     # console on the network
+likzik-stack --no-ui -c cfg.json -- --workers 8               # gateway only
+```
+
 ## Build
 
 Requires Zig 0.17.x, OpenSSL 3.x development files (`libssl-dev`), and

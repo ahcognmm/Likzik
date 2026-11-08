@@ -1,0 +1,28 @@
+{
+  "version": "dev-1",
+  "workers": 2,
+  "admin": { "address": "127.0.0.1:9901" },
+  "listeners": [
+    { "name": "web", "address": "127.0.0.1:8080", "route_config": "default" }
+  ],
+  "route_configs": [
+    { "name": "default", "virtual_hosts": [ { "name": "all", "domains": ["*"],
+      "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "app" } } ] } ] }
+  ],
+  "clusters": [
+    { "name": "app", "endpoints": [ { "address": "127.0.0.1:3000" } ] }
+  ],
+  "extensions": {
+    "gateway": {
+      "fallthrough": true,
+      "rate_limits": [
+        { "name": "per-ip", "requests": 50, "per": "second", "key": "client_ip" }
+      ],
+      "routes": [
+        { "name": "health", "path": "/healthz", "methods": ["GET"],
+          "respond": { "status": 200, "body": "ok\n", "content_type": "text/plain" } },
+        { "name": "api", "path": "/api/*rest", "rate_limits": ["per-ip"], "cluster": "app" }
+      ]
+    }
+  }
+}
