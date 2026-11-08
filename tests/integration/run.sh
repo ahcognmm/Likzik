@@ -69,7 +69,13 @@ cat > "$WORK/likzik.json" <<JSON
     { "name": "https", "address": "127.0.0.1:18444", "route_config": "main",
       "tls": { "certificates": [
         { "certificate_chain": "$PKI/a.crt", "private_key": "$PKI/a.key", "server_names": ["a.test", "*.wild.test"] },
-        { "certificate_chain": "$PKI/b.crt", "private_key": "$PKI/b.key", "server_names": ["b.test"] } ] } } ],
+        { "certificate_chain": "$PKI/b.crt", "private_key": "$PKI/b.key", "server_names": ["b.test"] } ] } },
+    { "name": "sni", "address": "127.0.0.1:18445", "protocol": "tcp",
+      "sni_routes": [ { "server_names": ["a.test", "*.wild.test"], "cluster": "self_https" } ] },
+    { "name": "pp_in", "address": "127.0.0.1:18447", "route_config": "main", "proxy_protocol": true },
+    { "name": "pp_out", "address": "127.0.0.1:18446", "protocol": "tcp", "cluster": "pp_in" },
+    { "name": "pp_tls", "address": "127.0.0.1:18448", "route_config": "main", "proxy_protocol": true,
+      "tls": { "certificates": [ { "certificate_chain": "$PKI/a.crt", "private_key": "$PKI/a.key" } ] } } ],
   "route_configs": [ { "name": "main", "virtual_hosts": [
     { "name": "echo", "domains": ["echo.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "echo" } } ] },
     { "name": "api", "domains": ["api.test", "*.api.test"], "routes": [
@@ -81,6 +87,8 @@ cat > "$WORK/likzik.json" <<JSON
   "clusters": [
     { "name": "web", "lb_policy": "round_robin", "endpoints": [ { "address": "127.0.0.1:19001" }, { "address": "127.0.0.1:19002" } ] },
     { "name": "echo", "endpoints": [ { "address": "127.0.0.1:19003" } ] },
+    { "name": "self_https", "endpoints": [ { "address": "127.0.0.1:18444" } ] },
+    { "name": "pp_in", "proxy_protocol": "v1", "endpoints": [ { "address": "127.0.0.1:18447" } ] },
     { "name": "dead", "connect_timeout_ms": 300, "endpoints": [ { "address": "127.0.0.1:1" } ] },
     { "name": "tlsup", "tls": { "sni": "upstream.test", "ca_file": "$PKI/ca.crt" }, "endpoints": [ { "address": "127.0.0.1:19004" } ] },
     { "name": "badtls", "tls": { "sni": "wrong.test", "ca_file": "$PKI/ca.crt" }, "endpoints": [ { "address": "127.0.0.1:19004" } ] } ] }
@@ -184,6 +192,35 @@ check "broken certificate rejected on reload" "$(curl -s -o /dev/null -w '%{http
 check "old certificate keeps serving" "$(code200 a.test /)" "200"
 cp "$PKI/a.crt.good" "$PKI/a.crt"
 check "tls metrics" "$(curl -s 127.0.0.1:19901/metrics | grep -c '^likzik_tls_handshakes_total ')" "1"
+
+echo "proxy protocol"
+xff() { grep -ai '^X-Forwarded-For' | tr -d '\r'; }
+check "PROXY v1 sets the client address" "$(printf 'PROXY TCP4 203.0.113.9 127.0.0.1 5555 18447\r\nGET /h HTTP/1.1\r\nHost: echo.test\r\nConnection: close\r\n\r\n' | timeout 3 nc -q 2 127.0.0.1 18447 | xff)" "X-Forwarded-For: 203.0.113.9"
+check "PROXY v2 sets the client address" "$( { printf '\r\n\r\n\x00\r\nQUIT\n\x21\x11\x00\x0c\xcb\x00\x71\x0a\x7f\x00\x00\x01\x15\xb3\x48\x2f'; printf 'GET /h HTTP/1.1\r\nHost: echo.test\r\nConnection: close\r\n\r\n'; } | timeout 3 nc -q 2 127.0.0.1 18447 | xff)" "X-Forwarded-For: 203.0.113.10"
+check "PROXY header split across packets" "$( { printf 'PROXY TCP4 198.51'; sleep 0.2; printf '.100.1 127.0.0.1 1 2\r\nGET /h HTTP/1.1\r\nHost: echo.test\r\nConnection: close\r\n\r\n'; } | timeout 3 nc -q 2 127.0.0.1 18447 | xff)" "X-Forwarded-For: 198.51.100.1"
+check "missing PROXY header -> closed" "$(printf 'GET /h HTTP/1.1\r\nHost: echo.test\r\n\r\n' | timeout 3 nc -q 2 127.0.0.1 18447 | head -c 4)" ""
+check "PROXY v1 then TLS" "$(python3 - "$PKI/ca.crt" <<'PY'
+import socket, ssl, sys
+s = socket.create_connection(("127.0.0.1", 18448))
+s.sendall(b"PROXY TCP4 192.0.2.77 127.0.0.1 4000 18448\r\n")
+ctx = ssl.create_default_context(cafile=sys.argv[1])
+ctx.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)  # the test CA is minimal
+t = ctx.wrap_socket(s, server_hostname="a.test")
+t.sendall(b"GET /h HTTP/1.1\r\nHost: echo.test\r\nConnection: close\r\n\r\n")
+data = b""
+while (chunk := t.recv(4096)):
+    data += chunk
+print([l for l in data.decode().split("\r\n") if l.lower().startswith("x-forwarded-for")][0])
+PY
+)" "X-Forwarded-For: 192.0.2.77"
+check "tcp listener sends PROXY v1 upstream" "$(curl -s -H 'Host: echo.test' http://127.0.0.1:18446/h | xff)" "X-Forwarded-For: 127.0.0.1"
+
+echo "sni passthrough"
+SP() { curl -s --cacert "$PKI/ca.crt" --resolve "$1:18445:127.0.0.1" "${@:3}" "https://$1:18445$2"; }
+check "SNI route, TLS passed through" "$(SP a.test / -o /dev/null -w '%{http_code}')" "200"
+check "SNI wildcard route" "$(SP x.wild.test /h -H 'Host: echo.test' | grep -ai '^X-Forwarded-Proto' | tr -d '\r')" "X-Forwarded-Proto: https"
+check "unknown SNI without default -> closed" "$(SP other.test / -k -o /dev/null -w '%{http_code}')" "000"
+check "sni metric" "$(curl -s 127.0.0.1:19901/stats | grep '^tcp_sni_unmatched:')" "tcp_sni_unmatched: 1"
 
 echo "access log"
 curl -s -o /dev/null -H 'Host: echo.test' "$P/alprobe?q=1"; S a.test /alprobe-tls -H 'Host: echo.test' -o /dev/null

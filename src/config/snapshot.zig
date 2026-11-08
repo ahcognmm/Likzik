@@ -35,6 +35,7 @@ pub const Cluster = struct {
     endpoints: []Endpoint,
     total_weight: u32,
     tls: ?ClientTls,
+    proxy_protocol: ?@import("../net/proxy_protocol.zig").Version = null,
 };
 
 pub const ClientTls = struct {
@@ -128,6 +129,32 @@ pub const Listener = struct {
     trust_forwarded_headers: bool,
     idle_timeout_ms: u32,
     tls: ?*Tls.Server,
+    proxy_protocol: bool,
+    /// TCP listeners: clusters chosen by TLS server name.
+    sni_routes: []SniRoute,
+
+    /// The cluster for a TLS server name (null name: no SNI sent).
+    pub fn clusterForSni(self: *const Listener, name: ?[]const u8) ?*Cluster {
+        const n = name orelse return self.cluster;
+        var best: ?*Cluster = null;
+        var best_len: usize = 0;
+        for (self.sni_routes) |r| {
+            if (r.wildcard) {
+                if (n.len > r.name.len and std.ascii.endsWithIgnoreCase(n, r.name) and r.name.len > best_len) {
+                    best = r.cluster;
+                    best_len = r.name.len;
+                }
+            } else if (std.ascii.eqlIgnoreCase(n, r.name)) return r.cluster;
+        }
+        return best orelse self.cluster;
+    }
+};
+
+pub const SniRoute = struct {
+    /// Exact name, or the ".suffix" of a "*.suffix" pattern.
+    name: []const u8,
+    wildcard: bool,
+    cluster: *Cluster,
 };
 
 pub const Snapshot = struct {
@@ -245,6 +272,7 @@ pub fn build(gpa: std.mem.Allocator, cfg: *const model.Config, reg: *Registry, d
             .endpoints = eps,
             .total_weight = total,
             .tls = null,
+            .proxy_protocol = src.proxy_protocol,
         };
     }
     var listeners_built: []Listener = &.{};
@@ -318,7 +346,21 @@ pub fn build(gpa: std.mem.Allocator, cfg: *const model.Config, reg: *Registry, d
             .trust_forwarded_headers = src.trust_forwarded_headers,
             .idle_timeout_ms = src.idle_timeout_ms,
             .tls = null,
+            .proxy_protocol = src.proxy_protocol,
+            .sni_routes = &.{},
         };
+        {
+            var n: usize = 0;
+            for (src.sni_routes) |r| n += r.server_names.len;
+            const out = try a.alloc(SniRoute, n);
+            var i: usize = 0;
+            for (src.sni_routes) |r| for (r.server_names) |name| {
+                const wild = name.len > 1 and name[0] == '*';
+                out[i] = .{ .name = try a.dupe(u8, if (wild) name[1..] else name), .wildcard = wild, .cluster = findC(clusters, r.cluster) };
+                i += 1;
+            };
+            dst.sni_routes = out;
+        }
         if (src.tls) |t| {
             const specs = try a.alloc(Tls.CertSpec, t.certificates.len);
             for (t.certificates, specs) |cert, *sp| sp.* = .{ .certificate_chain = cert.certificate_chain, .private_key = cert.private_key, .server_names = cert.server_names };

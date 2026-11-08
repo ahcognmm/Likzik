@@ -62,6 +62,15 @@ pub fn peerAddress(fd: linux.fd_t) Address {
     return a;
 }
 
+pub fn localAddress(fd: linux.fd_t) Address {
+    var a: Address = undefined;
+    var len: linux.socklen_t = @sizeOf(Address);
+    if (linux.errno(linux.getsockname(fd, &a.any, &len)) != .SUCCESS) {
+        a = .{ .in4 = .{ .port = 0, .addr = 0 } };
+    }
+    return a;
+}
+
 pub fn localPort(fd: linux.fd_t) u16 {
     var a: Address = undefined;
     var len: linux.socklen_t = @sizeOf(Address);
@@ -83,6 +92,37 @@ pub fn splice(fd_in: linux.fd_t, fd_out: linux.fd_t, len: usize) error{ WouldBlo
         .SUCCESS => rc,
         .AGAIN => error.WouldBlock,
         .INTR => error.WouldBlock,
+        else => |e| {
+            last_errno = e;
+            return error.SyscallFailed;
+        },
+    };
+}
+
+/// Non-blocking recv. 0 means the peer closed. With `peek`, the bytes stay
+/// in the socket.
+pub fn recvNb(fd: linux.fd_t, buf: []u8, peek: bool) error{ WouldBlock, SyscallFailed }!usize {
+    const flags: u32 = linux.MSG.DONTWAIT | (if (peek) @as(u32, linux.MSG.PEEK) else 0);
+    while (true) {
+        const rc = linux.recvfrom(fd, buf.ptr, buf.len, flags, null, null);
+        switch (linux.errno(rc)) {
+            .SUCCESS => return rc,
+            .AGAIN => return error.WouldBlock,
+            .INTR => continue,
+            else => |e| {
+                last_errno = e;
+                return error.SyscallFailed;
+            },
+        }
+    }
+}
+
+/// Non-blocking write (used to fill a pipe). Returns the bytes written.
+pub fn writeNb(fd: linux.fd_t, bytes: []const u8) error{ WouldBlock, SyscallFailed }!usize {
+    const rc = linux.write(fd, bytes.ptr, bytes.len);
+    return switch (linux.errno(rc)) {
+        .SUCCESS => rc,
+        .AGAIN, .INTR => error.WouldBlock,
         else => |e| {
             last_errno = e;
             return error.SyscallFailed;

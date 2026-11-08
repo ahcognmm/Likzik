@@ -64,6 +64,20 @@ pub const Listener = struct {
     /// TCP listeners: idle timeout for the tunnel.
     idle_timeout_ms: u32 = 300_000,
     tls: ?Tls = null,
+    /// Expect a PROXY protocol header (v1 or v2) from a load balancer in
+    /// front: the client address comes from it. Connections that do not
+    /// start with one are closed.
+    proxy_protocol: bool = false,
+    /// TCP listeners: choose the cluster by the TLS server name (SNI)
+    /// without terminating TLS. `cluster` (optional here) takes
+    /// connections with no or an unknown name.
+    sni_routes: []const SniRoute = &.{},
+};
+
+pub const SniRoute = struct {
+    /// Exact names or "*.example.com" (any one or more labels).
+    server_names: []const []const u8,
+    cluster: []const u8,
 };
 
 pub const TlsSettings = struct {
@@ -140,6 +154,9 @@ pub const Cluster = struct {
     eject_after_failures: u8 = 3,
     eject_ms: u32 = 10_000,
     tls: ?UpstreamTls = null,
+    /// Send a PROXY protocol header with the client's address to the
+    /// endpoints. TCP listeners only.
+    proxy_protocol: ?@import("../net/proxy_protocol.zig").Version = null,
     endpoints: []const Endpoint,
 };
 

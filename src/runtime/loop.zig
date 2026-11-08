@@ -24,6 +24,9 @@ pub const Op = enum(u8) {
     t_out_d,
     t_out_u,
     t_connect,
+    /// Connection preamble (PROXY protocol header, TLS ClientHello peek).
+    t_pre,
+    d_pre,
     /// TLS readiness (handshake and userspace-TLS data path).
     d_tls_in,
     d_tls_out,

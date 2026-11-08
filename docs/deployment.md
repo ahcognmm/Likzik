@@ -72,6 +72,51 @@ containing the same rule.
 - `net.core.somaxconn` and `net.ipv4.tcp_max_syn_backlog`: listeners use a
   backlog of 4096. Raise both to at least that.
 
+## Behind a load balancer: PROXY protocol
+
+When an L4 load balancer (AWS NLB, HAProxy, ...) sits in front, likzik
+sees the balancer's address. Enable the PROXY protocol on both sides and
+likzik takes the client address from the header instead:
+
+```json
+{ "name": "web", "address": "0.0.0.0:443", "route_config": "main", "proxy_protocol": true, "tls": { ... } }
+```
+
+v1 and v2 are both accepted; v2 `LOCAL` (balancer health checks) keeps
+the peer address. A connection that does not start with a valid header
+is closed and counted in `proxy_protocol_rejected`, so only enable it
+when every client goes through the balancer. The client address is used
+for `X-Forwarded-For` and the access log.
+
+TCP listeners can also *send* the header to their upstreams, so a backend
+behind a passthrough tunnel still sees the client:
+
+```json
+{ "name": "pg", "proxy_protocol": "v2", "endpoints": [ { "address": "10.0.0.4:5432" } ] }
+```
+
+(Only TCP listeners can use such a cluster: pooled HTTP upstream
+connections are shared between clients.)
+
+## TLS passthrough by server name (SNI)
+
+A TCP listener can route TLS connections by the server name in the
+ClientHello without terminating TLS: the backend does the handshake and
+sees the client's bytes unchanged.
+
+```json
+{ "name": "tls-in", "address": "0.0.0.0:443", "protocol": "tcp", "cluster": "fallback",
+  "sni_routes": [
+    { "server_names": ["db.example.com"], "cluster": "db" },
+    { "server_names": ["*.apps.example.com"], "cluster": "apps" } ] }
+```
+
+Exact names win over `*.suffix` patterns, and the longest suffix wins.
+`cluster` is optional; it takes connections with no SNI, an unknown name,
+or no TLS at all. Without it such connections are closed
+(`tcp_sni_unmatched`). The ClientHello must arrive within
+`limits.header_timeout_ms`.
+
 ## Access logs
 
 ```json

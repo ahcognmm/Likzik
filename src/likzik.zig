@@ -13,6 +13,7 @@ pub const http1 = struct {
 pub const net = struct {
     pub const addr = @import("net/addr.zig");
     pub const socket = @import("net/socket.zig");
+    pub const proxy_protocol = @import("net/proxy_protocol.zig");
 };
 
 pub const config = struct {
@@ -55,6 +56,7 @@ pub const tls = struct {
     pub const openssl = @import("tls/openssl.zig");
     pub const sni = @import("tls/sni.zig");
     pub const ktls = @import("tls/ktls.zig");
+    pub const client_hello = @import("tls/client_hello.zig");
 };
 
 pub const proxy = struct {

@@ -77,13 +77,23 @@ pub fn validate(cfg: *const model.Config, d: *Diag) error{InvalidConfig}!void {
         switch (li.protocol) {
             .http => {
                 const rc = li.route_config orelse return d.set("listener '{s}': http listener needs route_config", .{li.name});
+                if (li.sni_routes.len > 0) return d.set("listener '{s}': sni_routes need a tcp listener (http listeners route by Host)", .{li.name});
                 if (li.cluster != null) return d.set("listener '{s}': http listener cannot set cluster", .{li.name});
                 if (!findRouteConfig(cfg, rc)) return d.set("listener '{s}': unknown route_config '{s}'", .{ li.name, rc });
             },
             .tcp => {
-                const c = li.cluster orelse return d.set("listener '{s}': tcp listener needs cluster", .{li.name});
+                if (li.cluster == null and li.sni_routes.len == 0) return d.set("listener '{s}': tcp listener needs cluster or sni_routes", .{li.name});
                 if (li.route_config != null) return d.set("listener '{s}': tcp listener cannot set route_config", .{li.name});
-                if (!findCluster(cfg, c)) return d.set("listener '{s}': unknown cluster '{s}'", .{ li.name, c });
+                if (li.cluster) |c| if (!findCluster(cfg, c)) return d.set("listener '{s}': unknown cluster '{s}'", .{ li.name, c });
+                for (li.sni_routes) |r| {
+                    if (!findCluster(cfg, r.cluster)) return d.set("listener '{s}': sni route to unknown cluster '{s}'", .{ li.name, r.cluster });
+                    if (r.server_names.len == 0) return d.set("listener '{s}': sni route to '{s}' has no server_names", .{ li.name, r.cluster });
+                    for (r.server_names) |n| {
+                        const star = std.mem.indexOfScalar(u8, n, '*');
+                        if (n.len == 0 or (star != null and !(star.? == 0 and n.len > 2 and n[1] == '.' and std.mem.indexOfScalarPos(u8, n, 1, '*') == null)))
+                            return d.set("listener '{s}': unsupported server name '{s}' (use exact names or *.suffix)", .{ li.name, n });
+                    }
+                }
             },
         }
     }
@@ -119,6 +129,8 @@ pub fn validate(cfg: *const model.Config, d: *Diag) error{InvalidConfig}!void {
                     if (!ok) return d.set("virtual_host '{s}' route {d}: unknown method '{s}'", .{ vh.name, ri, meth });
                 };
                 if (!findCluster(cfg, r.route.cluster)) return d.set("virtual_host '{s}' route {d}: unknown cluster '{s}'", .{ vh.name, ri, r.route.cluster });
+                for (cfg.clusters) |c| if (c.proxy_protocol != null and std.mem.eql(u8, c.name, r.route.cluster))
+                    return d.set("virtual_host '{s}' route {d}: cluster '{s}' sends PROXY protocol, which only tcp listeners support", .{ vh.name, ri, c.name });
                 if (r.route.prefix_rewrite) |pr| {
                     if (m.prefix == null) return d.set("virtual_host '{s}' route {d}: prefix_rewrite needs a prefix match", .{ vh.name, ri });
                     if (pr.len == 0 or pr[0] != '/') return d.set("virtual_host '{s}' route {d}: prefix_rewrite must start with '/'", .{ vh.name, ri });

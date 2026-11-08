@@ -22,7 +22,7 @@ Legend: **done**, **partial**, **not started**.
 | --- | --- | --- |
 | HTTP/1.1 proxying | done | Keep-alive, pipelining (in order), chunked and Content-Length bodies, close-delimited responses, 1xx forwarding, de-chunking for HTTP/1.0 clients. |
 | HTTPS termination + upstream TLS | done | See TLS below. |
-| TCP/L4 proxying | done | splice, half-close, idle timeout, connect retry. SNI passthrough and PROXY protocol not started. |
+| TCP/L4 proxying | done | splice, half-close, idle timeout, connect retry, SNI passthrough routing, PROXY protocol (accept v1/v2 on any listener; send v1/v2 from TCP listeners). |
 | File + inotify reload, RCU core | done | Rename-into-place handled; invalid config keeps the old snapshot. |
 | Routing, upstream pools, LB | done | Linear first-match routing for now; the radix trie is gateway-phase. |
 | Within 10% of nginx p99 | on track | Single-host smoke test is at or better than nginx p99 in all workloads. The harness now runs the load generator on another host (`LOADGEN=`); the multi-host run itself is still to do (docs/benchmarking.md). |
@@ -63,7 +63,7 @@ Legend: **done**, **partial**, **not started**.
 | Startup check `/proc/net/tls_stat` | done | Also enforced on reload. |
 | kTLS share metric | done | `tls_ktls` vs `tls_userspace` (both downstream and upstream connections). |
 | Upstream TLS | done | SNI, verification (hostname + CA), pooled per cluster. |
-| TLS on TCP listeners, SNI passthrough | not started | |
+| TLS on TCP listeners, SNI passthrough | SNI passthrough done | TCP listeners route by the ClientHello's server name without terminating TLS (`sni_routes`). Terminating TLS on TCP listeners is not started. |
 
 ## Memory
 

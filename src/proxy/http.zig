@@ -40,6 +40,7 @@ const Tls = tls_backend.Tls;
 
 const log = std.log.scoped(.http);
 const access_log = @import("../observe/access_log.zig");
+const pp = @import("../net/proxy_protocol.zig");
 
 /// Longest request target kept for the access log (longer ones are cut).
 const log_target_max = 512;
@@ -135,6 +136,11 @@ pub const Down = struct {
     ext_active: bool = false,
     ext_token: usize = 0,
 
+    // PROXY protocol header still expected (consumed before anything else).
+    pp_pending: bool = false,
+    pre_blk: ?u32 = null,
+    pre_len: u16 = 0,
+
     // Access log for the current exchange (only filled when enabled).
     log_on: bool = false,
     log_status: u16 = 0,
@@ -181,10 +187,21 @@ pub fn accept(w: *Worker, fd: linux.fd_t, slot: u16) void {
     w.listeners[slot].conns += 1;
     w.stats.inc(.downstream_cx_total);
     w.stats.inc(.downstream_cx_active);
-    // The header timeout also bounds the TLS handshake.
+    // The header timeout also bounds the PROXY header and TLS handshake.
     w.schedule(&d.timer, .down, di, gen(w, di), w.cur.limits.header_timeout_ms);
-    if (w.listenerCfg(slot)) |lcfg| if (lcfg.tls) |srv| {
-        d.tls = Tls.newServerConn(srv.defaultCtx(), fd) orelse return closeDown(w, di);
+    if (w.listenerCfg(slot)) |lcfg| if (lcfg.proxy_protocol) {
+        d.pp_pending = true;
+        d.pre_blk = w.blocks.alloc() orelse return closeDown(w, di);
+        return armDownPre(w, di);
+    };
+    startDown(w, di);
+}
+
+/// Starts TLS or HTTP on an accepted (and PROXY-unwrapped) connection.
+fn startDown(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    if (w.listenerCfg(d.listener)) |lcfg| if (lcfg.tls) |srv| {
+        d.tls = Tls.newServerConn(srv.defaultCtx(), d.fd) orelse return closeDown(w, di);
         d.tls_mode = .handshake;
         // The SNI callback reads the snapshot's certificate table: keep the
         // snapshot alive until the handshake is over.
@@ -193,6 +210,62 @@ pub fn accept(w: *Worker, fd: linux.fd_t, slot: u16) void {
         return;
     };
     updateDownRecv(w, di);
+}
+
+// ---------------------------------------------------------------- PROXY protocol
+
+fn armDownPre(w: *Worker, di: u32) void {
+    const d = get(w, di);
+    w.loop.pollOnce(d.fd, linux.POLL.IN | 0x2000, udOf(w, .d_pre, di));
+    d.pending += 1;
+}
+
+/// Reads the PROXY header without touching the bytes after it: peek, and
+/// consume only bytes that are certainly part of the header (the TLS
+/// handshake reads the socket directly afterwards).
+pub fn onDownPreamble(w: *Worker, di: u32, cqe: *const linux.io_uring_cqe) void {
+    const d = get(w, di);
+    d.pending -= 1;
+    defer if (d.phase == .closing and d.pending == 0) w.reapLater(.down, di, gen(w, di));
+    if (d.phase == .closing) return;
+    if (cqe.res < 0) return closeDown(w, di);
+    const b = w.blocks.bytes(d.pre_blk.?)[0..pp.max_len];
+    const n = socket.recvNb(d.fd, b[d.pre_len..], true) catch |e| switch (e) {
+        error.WouldBlock => return armDownPre(w, di),
+        error.SyscallFailed => return closeDown(w, di),
+    };
+    if (n == 0) return closeDown(w, di);
+    const view = b[0 .. d.pre_len + n];
+    switch (pp.parse(view)) {
+        .invalid => return rejectPreamble(w, di),
+        .incomplete => {
+            if (view.len == b.len) return rejectPreamble(w, di);
+            // Everything seen is a strict prefix of the header: consume it.
+            if (!consume(d.fd, b[d.pre_len..][0..n])) return closeDown(w, di);
+            d.pre_len += @intCast(n);
+            return armDownPre(w, di);
+        },
+        .done => |h| {
+            if (!consume(d.fd, b[d.pre_len..h.len])) return closeDown(w, di);
+            if (h.src) |src| d.ip_len = @intCast(src.formatIp(&d.ip_buf).len);
+            w.blocks.unref(d.pre_blk.?);
+            d.pre_blk = null;
+            d.pp_pending = false;
+            startDown(w, di);
+        },
+    }
+}
+
+/// Reads exactly `into.len` bytes that a peek showed are there.
+fn consume(fd: linux.fd_t, into: []u8) bool {
+    if (into.len == 0) return true;
+    const n = socket.recvNb(fd, into, false) catch return false;
+    return n == into.len;
+}
+
+fn rejectPreamble(w: *Worker, di: u32) void {
+    w.stats.inc(.proxy_protocol_rejected);
+    closeDown(w, di);
 }
 
 // ---------------------------------------------------------------- TLS (downstream)
@@ -352,7 +425,7 @@ pub fn downBackpressured(w: *Worker, di: u32) bool {
 }
 
 fn wantDownRecv(w: *Worker, d: *Down) bool {
-    if (d.phase == .closing) return false;
+    if (d.phase == .closing or d.pp_pending) return false;
     if (d.lingering) return true;
     if (d.close_after_flush) return false;
     if (d.phase == .exchange) {
@@ -1601,6 +1674,7 @@ pub fn maybeFreeDown(w: *Worker, di: u32) void {
     if (d.phase != .closing or d.pending > 0) return;
     d.out.clear(&w.segs, w);
     d.in.release(&w.blocks);
+    if (d.pre_blk) |blk| w.blocks.unref(blk);
     if (d.tls) |t| Tls.freeConn(t);
     socket.closeFd(d.fd);
     w.listeners[d.listener].conns -= 1;

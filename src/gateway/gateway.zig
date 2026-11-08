@@ -231,7 +231,9 @@ fn compile(arena: std.mem.Allocator, value: std.json.Value, snap: *const snapsho
         if (n_actions != 1) return d.set("gateway route '{s}': set exactly one of cluster, redirect, respond", .{src.name});
         var action: Action = undefined;
         if (src.cluster) |cn| {
-            action = .{ .cluster = findCluster(snap, cn) orelse return d.set("gateway route '{s}': unknown cluster '{s}'", .{ src.name, cn }) };
+            const cl = findCluster(snap, cn) orelse return d.set("gateway route '{s}': unknown cluster '{s}'", .{ src.name, cn });
+            if (cl.proxy_protocol != null) return d.set("gateway route '{s}': cluster '{s}' sends PROXY protocol, which only tcp listeners support", .{ src.name, cn });
+            action = .{ .cluster = cl };
         } else if (src.redirect) |r| {
             if (r.status != 301 and r.status != 302 and r.status != 303 and r.status != 307 and r.status != 308)
                 return d.set("gateway route '{s}': redirect status must be 301, 302, 303, 307 or 308", .{src.name});

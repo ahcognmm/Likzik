@@ -24,13 +24,15 @@ const snapshot = @import("../config/snapshot.zig");
 const socket = @import("../net/socket.zig");
 const Address = @import("../net/addr.zig").Address;
 const lb = @import("../upstream/lb.zig");
+const pp = @import("../net/proxy_protocol.zig");
+const client_hello = @import("../tls/client_hello.zig");
 
 const log = std.log.scoped(.tcp);
 
 const splice_chunk = 64 * 1024;
 const pollrdhup: u32 = 0x2000;
 
-pub const State = enum { connecting, open, closing };
+pub const State = enum { preamble, connecting, open, closing };
 
 pub const Tunnel = struct {
     dfd: linux.fd_t,
@@ -55,6 +57,15 @@ pub const Tunnel = struct {
     attempts: u8 = 0,
     addr: Address = undefined,
     connect_ts: linux.kernel_timespec = .{ .sec = 0, .nsec = 0 },
+    // Preamble: bytes read before connecting (PROXY header stripped, then
+    // the ClientHello for SNI routing), replayed to the upstream.
+    pre_blk: ?u32 = null,
+    pre_len: u32 = 0,
+    need_pp: bool = false,
+    need_sni: bool = false,
+    /// Client and local address, from the PROXY header when there is one.
+    client: ?Address = null,
+    local: ?Address = null,
 };
 
 inline fn get(w: *Worker, ti: u32) *Tunnel {
@@ -81,8 +92,102 @@ pub fn accept(w: *Worker, fd: linux.fd_t, slot: u16) void {
     w.stats.inc(.tcp_cx_total);
     w.stats.inc(.tcp_cx_active);
     t.snap = w.pinCurrent() orelse return close(w, ti);
-    t.cluster = lcfg.cluster.?;
+    t.cluster = lcfg.cluster;
+    if (lcfg.proxy_protocol or lcfg.sni_routes.len > 0) {
+        t.need_pp = lcfg.proxy_protocol;
+        t.need_sni = lcfg.sni_routes.len > 0;
+        t.state = .preamble;
+        t.pre_blk = w.blocks.alloc() orelse return close(w, ti);
+        w.schedule(&t.timer, .tunnel, ti, w.tunnels.gen(ti), w.cur.limits.header_timeout_ms);
+        return armPre(w, ti);
+    }
     connectNext(w, ti, null);
+}
+
+fn armPre(w: *Worker, ti: u32) void {
+    const t = get(w, ti);
+    w.loop.pollOnce(t.dfd, linux.POLL.IN | pollrdhup, udOf(w, .t_pre, ti));
+    t.pending += 1;
+}
+
+/// Reads what the client sent so far and decides where the tunnel goes.
+fn onPreamble(w: *Worker, ti: u32) void {
+    const t = get(w, ti);
+    const buf = w.blocks.bytes(t.pre_blk.?);
+    while (t.pre_len < buf.len) {
+        const n = socket.recvNb(t.dfd, buf[t.pre_len..], false) catch |e| switch (e) {
+            error.WouldBlock => break,
+            error.SyscallFailed => return close(w, ti),
+        };
+        if (n == 0) return close(w, ti);
+        t.pre_len += @intCast(n);
+    }
+    if (t.need_pp) switch (pp.parse(buf[0..t.pre_len])) {
+        .incomplete => return if (t.pre_len == buf.len) rejectPre(w, ti) else armPre(w, ti),
+        .invalid => return rejectPre(w, ti),
+        .done => |h| {
+            t.client = h.src;
+            t.local = h.dst;
+            std.mem.copyForwards(u8, buf[0 .. t.pre_len - h.len], buf[h.len..t.pre_len]);
+            t.pre_len -= @intCast(h.len);
+            t.need_pp = false;
+        },
+    };
+    if (t.need_sni) {
+        const lcfg = w.listenerCfg(t.listener) orelse return close(w, ti);
+        var scratch: [client_hello.max_hello]u8 = undefined;
+        const name: ?[]const u8 = switch (client_hello.parse(buf[0..t.pre_len], &scratch)) {
+            .incomplete => if (t.pre_len == buf.len) null else return armPre(w, ti),
+            .invalid => null, // not TLS (or too large): the default cluster, if any
+            .done => |sni| sni,
+        };
+        t.cluster = lcfg.clusterForSni(name);
+        t.need_sni = false;
+        if (t.cluster == null) {
+            w.stats.inc(.tcp_sni_unmatched);
+            return close(w, ti);
+        }
+    }
+    w.wheel.cancel(&t.timer);
+    t.state = .connecting;
+    connectNext(w, ti, null);
+}
+
+fn rejectPre(w: *Worker, ti: u32) void {
+    w.stats.inc(.proxy_protocol_rejected);
+    close(w, ti);
+}
+
+/// Queues the PROXY header (if the cluster wants one) and the preamble
+/// bytes into the client-to-upstream pipe, ahead of everything else.
+fn replayPreamble(w: *Worker, ti: u32, c: *const snapshot.Cluster) bool {
+    const t = get(w, ti);
+    if (c.proxy_protocol) |ver| {
+        const src = t.client orelse socket.peerAddress(t.dfd);
+        const dst = t.local orelse socket.localAddress(t.dfd);
+        var hb: [pp.max_len]u8 = undefined;
+        const h = pp.write(ver, &src, &dst, &hb);
+        if (!fillPipe(t, h)) return false;
+    }
+    if (t.pre_blk) |blk| {
+        const ok = fillPipe(t, w.blocks.bytes(blk)[0..t.pre_len]);
+        w.blocks.unref(blk);
+        t.pre_blk = null;
+        if (!ok) return false;
+    }
+    return true;
+}
+
+/// Writes into the empty client-to-upstream pipe (64 KiB, so a preamble
+/// of at most one block plus a header always fits).
+fn fillPipe(t: *Tunnel, bytes: []const u8) bool {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const n = socket.writeNb(t.pipes[0][1], bytes[off..]) catch return false;
+        off += n;
+    }
+    t.buffered[0] += bytes.len;
+    return true;
 }
 
 fn connectNext(w: *Worker, ti: u32, exclude: ?u32) void {
@@ -125,17 +230,19 @@ fn onConnect(w: *Worker, ti: u32, res: i32) void {
         return;
     }
     if (w.eps.get(w.gpa, t.ep_id.?)) |st| st.recordSuccess() else |_| {}
+    t.pipes[0] = socket.pipe() catch return close(w, ti);
+    t.pipes[1] = socket.pipe() catch return close(w, ti);
+    if (!replayPreamble(w, ti, c)) return close(w, ti);
     // The snapshot is only needed to pick an endpoint.
     w.unpin(t.snap.?);
     t.snap = null;
     t.cluster = null;
-    t.pipes[0] = socket.pipe() catch return close(w, ti);
-    t.pipes[1] = socket.pipe() catch return close(w, ti);
     t.state = .open;
     t.last_activity_ms = w.now_ms;
     w.schedule(&t.timer, .tunnel, ti, w.tunnels.gen(ti), t.idle_timeout_ms);
     armIn(w, ti, 0);
     armIn(w, ti, 1);
+    if (t.buffered[0] > 0) pump(w, ti, 0);
 }
 
 fn srcFd(t: *const Tunnel, dir: u1) linux.fd_t {
@@ -180,6 +287,12 @@ pub fn onEvent(w: *Worker, u: Ud, cqe: *const linux.io_uring_cqe) void {
         .t_connect => {
             t.pending -= 1;
             onConnect(w, ti, cqe.res);
+        },
+        .t_pre => {
+            t.pending -= 1;
+            if (t.state != .preamble) return;
+            if (cqe.res < 0 and cqe.res != -@as(i32, @intFromEnum(linux.E.CANCELED))) return close(w, ti);
+            onPreamble(w, ti);
         },
         .t_in_d, .t_in_u => {
             const dir: u1 = if (u.op == .t_in_d) 0 else 1;
@@ -244,6 +357,7 @@ fn pump(w: *Worker, ti: u32, dir: u1) void {
 
 pub fn onTimer(w: *Worker, ti: u32) void {
     const t = get(w, ti);
+    if (t.state == .preamble) return close(w, ti); // header/ClientHello too slow
     if (t.state != .open) return;
     const idle_for = w.now_ms -| t.last_activity_ms;
     if (idle_for >= t.idle_timeout_ms) return close(w, ti);
@@ -269,6 +383,10 @@ pub fn close(w: *Worker, ti: u32) void {
 pub fn maybeFree(w: *Worker, ti: u32) void {
     const t = get(w, ti);
     if (t.state != .closing or t.pending > 0) return;
+    if (t.pre_blk) |blk| {
+        w.blocks.unref(blk);
+        t.pre_blk = null;
+    }
     socket.closeFd(t.dfd);
     if (t.ufd >= 0) socket.closeFd(t.ufd);
     for (t.pipes) |p| for (p) |fd| if (fd >= 0) socket.closeFd(fd);

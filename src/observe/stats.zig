@@ -40,6 +40,10 @@ pub const Counter = enum {
     tcp_cx_total,
     tcp_cx_active,
     tcp_bytes,
+    /// TCP connections closed because no SNI route (and no default) matched.
+    tcp_sni_unmatched,
+    /// Connections closed for a missing or malformed PROXY protocol header.
+    proxy_protocol_rejected,
     bytes_received,
     bytes_sent,
     buffer_ring_enobufs,

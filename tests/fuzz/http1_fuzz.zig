@@ -237,3 +237,65 @@ test "mutation fuzz: parser and chunked decoder properties" {
         };
     }
 }
+
+// ---------------------------------------------------------------- connection preambles
+
+const pp = likzik.net.proxy_protocol;
+const client_hello = likzik.tls.client_hello;
+
+const preamble_corpus = [_][]const u8{
+    "PROXY TCP4 192.0.2.1 198.51.100.7 56324 443\r\nGET /",
+    "PROXY TCP6 2001:db8::1 2001:db8::2 1 2\r\n",
+    "PROXY UNKNOWN\r\n",
+    "\r\n\r\n\x00\r\nQUIT\n\x21\x11\x00\x0c\xc0\x00\x02\x01\xc6\x33\x64\x07\xdc\x04\x01\xbb",
+    "\r\n\r\n\x00\r\nQUIT\n\x20\x00\x00\x03\x01\x00\x00",
+    // ClientHello with SNI "a.test"
+    "\x16\x03\x01\x00\x45\x01\x00\x00\x41\x03\x03\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x52\x00\x00\x02\x13\x01\x01\x00\x00\x16\x00\x2b\x00\x03\x02\x03\x04\x00\x00\x00\x0b\x00\x09\x00\x00\x06\x61\x2e\x74\x65\x73\x74",
+};
+
+/// A prefix of the input never contradicts the full input: it is
+/// incomplete, or gives the same answer.
+fn checkPreambles(input: []const u8, cut: usize) !void {
+    const full = pp.parse(input);
+    const part = pp.parse(input[0..cut]);
+    switch (full) {
+        .done => |h| {
+            if (h.len > input.len) return error.HeaderPastInput;
+            if (cut < h.len) {
+                if (part != .incomplete) return error.PrefixNotIncomplete;
+            } else if (part != .done or part.done.len != h.len) return error.PrefixDiffers;
+        },
+        .invalid => if (part == .done) return error.PrefixDoneButFullInvalid,
+        .incomplete => if (part != .incomplete) return error.PrefixDecidedEarly,
+    }
+
+    var s1: [client_hello.max_hello]u8 = undefined;
+    var s2: [client_hello.max_hello]u8 = undefined;
+    const ch = client_hello.parse(input, &s1);
+    const chp = client_hello.parse(input[0..cut], &s2);
+    switch (ch) {
+        .done => |name| switch (chp) {
+            .incomplete => {},
+            .done => |pn| if (!std.mem.eql(u8, name orelse "", pn orelse "")) return error.SniDiffers,
+            .invalid => return error.SniPrefixInvalid,
+        },
+        .invalid => if (chp == .done) return error.SniPrefixDoneButFullInvalid,
+        .incomplete => if (chp != .incomplete) return error.SniPrefixDecidedEarly,
+    }
+}
+
+test "mutation fuzz: PROXY protocol and ClientHello parsers" {
+    var prng = std.Random.DefaultPrng.init(0x9e0_2026);
+    const rng = prng.random();
+    var buf: [4096]u8 = undefined;
+    for (0..fuzzIters()) |_| {
+        const seed = preamble_corpus[rng.uintLessThan(usize, preamble_corpus.len)];
+        const input = mutate(rng, &buf, seed);
+        const cut = if (input.len > 0) rng.uintLessThan(usize, input.len + 1) else 0;
+        checkPreambles(input, cut) catch |e| {
+            std.debug.print("preamble property failed ({s}) at cut {d} on: {any}\n", .{ @errorName(e), cut, input });
+            return e;
+        };
+    }
+    for (preamble_corpus) |c| for (0..c.len + 1) |cut| try checkPreambles(c, cut);
+}
