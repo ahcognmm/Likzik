@@ -160,6 +160,7 @@ pub const Cluster = struct {
     max_ejection_percent: u8 = 50,
     circuit_breakers: CircuitBreakers = .{},
     retry: ?RetryPolicy = null,
+    health_check: ?HealthCheck = null,
     tls: ?UpstreamTls = null,
     /// Send a PROXY protocol header with the client's address to the
     /// endpoints. TCP listeners only.
@@ -173,6 +174,20 @@ pub const CircuitBreakers = struct {
     max_connections: u32 = 0,
     max_requests: u32 = 0,
     max_retries: u32 = 0,
+};
+
+/// Active health checks: a TCP connect, or an HTTP GET of `path` that must
+/// answer 200-399.
+pub const HealthCheck = struct {
+    interval_ms: u32 = 5_000,
+    timeout_ms: u32 = 1_000,
+    /// Failures in a row before an endpoint is marked unhealthy.
+    unhealthy_threshold: u8 = 3,
+    /// Passes in a row before it is healthy again.
+    healthy_threshold: u8 = 2,
+    path: ?[]const u8 = null,
+    /// Host header (default: the endpoint address).
+    host: ?[]const u8 = null,
 };
 
 pub const RetryOn = enum {

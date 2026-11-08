@@ -193,7 +193,7 @@ fn fillPipe(t: *Tunnel, bytes: []const u8) bool {
 fn connectNext(w: *Worker, ti: u32, exclude: ?u32) void {
     const t = get(w, ti);
     const c = t.cluster.?;
-    var ctx: lb.Ctx = .{ .gpa = w.gpa, .eps = &w.eps, .rng = w.prng.random(), .now_ms = w.now_ms };
+    var ctx = w.lbCtx();
     var excl = exclude;
     while (t.attempts < c.max_connect_attempts) {
         const ep = (lb.pick(&ctx, c, excl) catch null) orelse break;

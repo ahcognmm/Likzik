@@ -46,6 +46,9 @@ pub const Shared = struct {
     ext_states: []?*anyopaque = &.{},
     /// One access log ring per worker (drained by the control thread).
     access_logs: []@import("../observe/access_log.zig").Ring = &.{},
+    /// Active health check results, one byte per endpoint id.
+    ep_down: []const std.atomic.Value(u8) = &.{},
+    health: ?*@import("../upstream/active_health.zig").ActiveHealth = null,
     pbuf_count: u16 = 256,
     pin_cpus: bool = true,
 };
@@ -434,10 +437,14 @@ pub const Worker = struct {
         // Only look at the whole cluster when this failure could eject.
         var may = false;
         if (threshold != 0 and count +| 1 >= threshold) {
-            var ctx: lb.Ctx = .{ .gpa = self.gpa, .eps = &self.eps, .rng = self.prng.random(), .now_ms = self.now_ms };
+            var ctx = self.lbCtx();
             may = lb.mayEject(&ctx, c);
         }
         if (st.recordFailure(kind, self.now_ms, threshold, c.eject_ms, may)) self.stats.inc(.endpoint_ejections);
+    }
+
+    pub fn lbCtx(self: *Worker) lb.Ctx {
+        return .{ .gpa = self.gpa, .eps = &self.eps, .rng = self.prng.random(), .now_ms = self.now_ms, .down = self.shared.ep_down };
     }
 
     pub fn listenerCfg(self: *Worker, slot: u16) ?*const snapshot.Listener {

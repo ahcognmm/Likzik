@@ -94,6 +94,7 @@ cat > "$WORK/likzik.json" <<JSON
     { "name": "flaky", "domains": ["flaky.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "flaky" } } ] },
     { "name": "retry5xx", "domains": ["retry5xx.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "retry5xx" } } ] },
     { "name": "retryreset", "domains": ["retryreset.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "retryreset" } } ] },
+    { "name": "hc", "domains": ["hc.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "hc" } } ] },
     { "name": "limited", "domains": ["limited.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "limited" } } ] },
     { "name": "default", "domains": ["*"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "web" } } ] } ] } ],
   "clusters": [
@@ -105,6 +106,11 @@ cat > "$WORK/likzik.json" <<JSON
       "endpoints": [ { "address": "127.0.0.1:19005" }, { "address": "127.0.0.1:19002" } ] },
     { "name": "retryreset", "lb_policy": "round_robin", "retry": { "retry_on": ["reset"] },
       "endpoints": [ { "address": "127.0.0.1:19003" }, { "address": "127.0.0.1:19002" } ] },
+    { "name": "hc", "lb_policy": "round_robin",
+      "health_check": { "path": "/", "interval_ms": 200, "timeout_ms": 150, "unhealthy_threshold": 2, "healthy_threshold": 1 },
+      "endpoints": [ { "address": "127.0.0.1:19002" }, { "address": "127.0.0.1:19005" } ] },
+    { "name": "hc_tcp", "health_check": { "interval_ms": 200, "timeout_ms": 150, "unhealthy_threshold": 2 },
+      "endpoints": [ { "address": "127.0.0.1:19001" }, { "address": "127.0.0.1:1" } ] },
     { "name": "limited", "circuit_breakers": { "max_requests": 2 }, "endpoints": [ { "address": "127.0.0.1:19003" } ] },
     { "name": "self_https", "endpoints": [ { "address": "127.0.0.1:18444" } ] },
     { "name": "pp_in", "proxy_protocol": "v1", "endpoints": [ { "address": "127.0.0.1:18447" } ] },
@@ -233,6 +239,12 @@ check "circuit breaker answers 503 over max_requests" "$(grep -c 503 "$WORK/cb.t
 check "circuit breaker lets requests within the limit through" "$(grep -c 200 "$WORK/cb.txt" | awk '{print ($1 > 0 && $1 <= 2)}')" "1"
 check "overflow counted" "$(curl -s 127.0.0.1:19901/stats | grep -c '^upstream_rq_overflow: [1-9]')" "1"
 check "requests flow again after the burst" "$(code -H 'Host: limited.test' $P/)" "200"
+
+echo "active health checks"
+sleep 1
+check "HTTP check takes a 5xx endpoint out" "$(for i in $(seq 10); do curl -s -H 'Host: hc.test' $P/; done | sort -u | tr -d '\n')" "b"
+check "TCP check marks a refused endpoint unhealthy" "$(curl -s 127.0.0.1:19901/stats | grep '^endpoints_unhealthy:')" "endpoints_unhealthy: 2"
+check "health events logged" "$(grep -c 'is unhealthy' "$WORK/likzik.log")" "2"
 
 echo "proxy protocol"
 xff() { grep -ai '^X-Forwarded-For' | tr -d '\r'; }

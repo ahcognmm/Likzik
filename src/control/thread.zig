@@ -201,6 +201,7 @@ pub const Control = struct {
             return false;
         };
         self.wakeWorkers(.config);
+        if (self.shared.health) |h| h.setTargets(snap);
         self.reloads_ok += 1;
         self.last_error_len = 0;
         self.setVersion(snap.version);

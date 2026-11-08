@@ -11,17 +11,21 @@
 const std = @import("std");
 const snapshot = @import("../config/snapshot.zig");
 const health = @import("health.zig");
+const ActiveHealth = @import("active_health.zig").ActiveHealth;
 
 pub const Ctx = struct {
     gpa: std.mem.Allocator,
     eps: *health.Table,
     rng: std.Random,
     now_ms: u64,
+    /// Active health check results (empty: none).
+    down: []const std.atomic.Value(u8) = &.{},
 };
 
 fn eligible(ctx: *Ctx, e: *const snapshot.Endpoint, exclude: ?u32, panic: bool) !bool {
     if (exclude) |x| if (x == e.id) return false;
     if (panic) return true;
+    if (ActiveHealth.isDown(ctx.down, e.id)) return false;
     return (try ctx.eps.get(ctx.gpa, e.id)).healthy(ctx.now_ms);
 }
 
@@ -37,6 +41,10 @@ pub fn mayEject(ctx: *Ctx, c: *const snapshot.Cluster) bool {
 }
 
 pub fn pick(ctx: *Ctx, c: *const snapshot.Cluster, exclude: ?u32) !?*const snapshot.Endpoint {
+    // Active check results apply only to clusters that configure checks.
+    const saved = ctx.down;
+    if (c.health_check == null) ctx.down = &.{};
+    defer ctx.down = saved;
     const eps = c.endpoints;
     if (eps.len == 1) {
         return if (exclude != null and exclude.? == eps[0].id) null else &eps[0];

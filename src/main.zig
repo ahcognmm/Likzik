@@ -183,7 +183,12 @@ pub fn run(init: std.process.Init) !u8 {
     defer gpa.free(access_logs);
     for (access_logs) |*r| r.* = try .init(likzik.observe.access_log.ring_bytes);
     defer for (access_logs) |*r| r.deinit();
-    var shared: worker_mod.Shared = .{ .rcu = &rcu, .stats = worker_stats, .ring_fds = ring_fds, .pin_cpus = args.pin, .pbuf_count = args.buffers, .ext_states = ext_states, .access_logs = access_logs };
+    var health: likzik.upstream.active_health.ActiveHealth = undefined;
+    try health.init(gpa);
+    defer health.deinit();
+    health.setTargets(first);
+    try health.start();
+    var shared: worker_mod.Shared = .{ .rcu = &rcu, .stats = worker_stats, .ring_fds = ring_fds, .pin_cpus = args.pin, .pbuf_count = args.buffers, .ext_states = ext_states, .access_logs = access_logs, .ep_down = health.down, .health = &health };
 
     const threads = try gpa.alloc(std.Thread, n_workers);
     defer gpa.free(threads);

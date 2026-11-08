@@ -27,6 +27,25 @@ are split evenly across workers, rounded up.
 
 Ejections are counted in `endpoint_ejections`.
 
+## Active health checks
+
+```json
+"health_check": { "path": "/healthz", "interval_ms": 5000, "timeout_ms": 1000,
+                  "unhealthy_threshold": 3, "healthy_threshold": 2, "host": "users.internal" }
+```
+
+A background thread probes every endpoint of the cluster: an HTTP `GET`
+of `path` that must answer 200-399, or, without `path`, a TCP connect.
+After `unhealthy_threshold` failures in a row the endpoint gets no new
+requests (on any worker) until `healthy_threshold` checks pass. Endpoints
+start healthy, and if every endpoint is down they are all used anyway
+(panic mode). Transitions are logged; `/stats` reports
+`health_checks_failed` and `endpoints_unhealthy`.
+
+Results apply to the clusters that configure a check. When two such
+clusters share an endpoint address, the first cluster's check is used for
+both. HTTP checks on TLS clusters are not supported yet (use a TCP check).
+
 ## Retries
 
 With a `retry` policy, a failed attempt is retried on a different endpoint

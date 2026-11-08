@@ -721,7 +721,7 @@ fn startUpstream(w: *Worker, di: u32, exclude_first: ?u32) void {
     const d = get(w, di);
     const c = d.cluster.?;
     var exclude = exclude_first;
-    var ctx: lb.Ctx = .{ .gpa = w.gpa, .eps = &w.eps, .rng = w.prng.random(), .now_ms = w.now_ms };
+    var ctx = w.lbCtx();
     while (d.attempts < c.max_connect_attempts) {
         const ep = (lb.pick(&ctx, c, exclude) catch null) orelse break;
         d.attempts += 1;

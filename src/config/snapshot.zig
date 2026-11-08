@@ -36,6 +36,7 @@ pub const Cluster = struct {
     max_ejection_percent: u8 = 50,
     breakers: model.CircuitBreakers = .{},
     retry: ?Retry = null,
+    health_check: ?model.HealthCheck = null,
     endpoints: []Endpoint,
     total_weight: u32,
     tls: ?ClientTls,
@@ -284,6 +285,14 @@ pub fn build(gpa: std.mem.Allocator, cfg: *const model.Config, reg: *Registry, d
             .consecutive_5xx = src.consecutive_5xx,
             .max_ejection_percent = src.max_ejection_percent,
             .breakers = src.circuit_breakers,
+            .health_check = if (src.health_check) |hc| .{
+                .interval_ms = hc.interval_ms,
+                .timeout_ms = hc.timeout_ms,
+                .unhealthy_threshold = hc.unhealthy_threshold,
+                .healthy_threshold = hc.healthy_threshold,
+                .path = if (hc.path) |p| try a.dupe(u8, p) else null,
+                .host = if (hc.host) |h| try a.dupe(u8, h) else null,
+            } else null,
             .retry = if (src.retry) |r| .{
                 .on_5xx = std.mem.indexOfScalar(model.RetryOn, r.retry_on, .@"5xx") != null,
                 .on_gateway_error = std.mem.indexOfScalar(model.RetryOn, r.retry_on, .gateway_error) != null,

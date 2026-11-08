@@ -79,6 +79,7 @@ fn handle(c: *Control, method: []const u8, path: []const u8, body: *std.ArrayLis
         inline for (info.field_names, info.field_values) |fname, value| {
             try body.print(gpa, "{s}: {d}\n", .{ fname, stats.sum(c.shared.stats, @enumFromInt(value)) });
         }
+        if (c.shared.health) |h| try body.print(gpa, "health_checks_failed: {d}\nendpoints_unhealthy: {d}\n", .{ h.checks_failed.load(.monotonic), h.unhealthy.load(.monotonic) });
     } else if (get and std.mem.eql(u8, path, "/metrics")) {
         ctype.* = "text/plain; version=0.0.4";
         try prometheus.write(body, gpa, c.shared.stats);

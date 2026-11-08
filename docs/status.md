@@ -102,7 +102,8 @@ Legend: **done**, **partial**, **not started**.
 | Outlier detection (consecutive 5xx, max ejection %) | 2 | done (per worker; docs/upstreams.md) |
 | Retries: budgeted, idempotent only, different host | 2 | done: `retry_on` gateway_error / 5xx / reset, budget % of active requests, `max_retries`. Per-try timeouts not started. |
 | Circuit breaking (connections, requests, retries) | 2 | done, per-worker shares of process-wide limits. No pending queue (HTTP/1.1 connects at once). |
-| Cross-worker handoff, active health, mirroring | 2+ | not started |
+| Active health (TCP/HTTP checks off the workers, results shared) | 2 | done: one checker thread; results in a shared per-endpoint table read by the load balancers. HTTP checks over TLS not started. |
+| Cross-worker handoff, mirroring | 2+ | not started |
 | Ring hash / Maglev | 3 | not started |
 
 ## Dynamic configuration

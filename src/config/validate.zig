@@ -100,6 +100,16 @@ pub fn validate(cfg: *const model.Config, d: *Diag) error{InvalidConfig}!void {
 
     for (cfg.clusters) |c| {
         if (c.max_ejection_percent > 100) return d.set("cluster '{s}': max_ejection_percent must be 0..100", .{c.name});
+        if (c.health_check) |hc| {
+            if (hc.interval_ms < 100 or hc.timeout_ms == 0 or hc.timeout_ms >= hc.interval_ms)
+                return d.set("cluster '{s}': health_check needs interval_ms >= 100 and 0 < timeout_ms < interval_ms", .{c.name});
+            if (hc.healthy_threshold == 0 or hc.unhealthy_threshold == 0) return d.set("cluster '{s}': health_check thresholds must be at least 1", .{c.name});
+            if (hc.path) |p| {
+                if (p.len == 0 or p[0] != '/' or std.mem.indexOfAny(u8, p, " \r\n") != null) return d.set("cluster '{s}': health_check.path must start with '/' and contain no spaces", .{c.name});
+                if (c.tls != null) return d.set("cluster '{s}': HTTP health checks over TLS are not supported yet; omit path for a TCP check", .{c.name});
+            }
+            if (hc.host) |h| if (h.len == 0 or std.mem.indexOfAny(u8, h, " \r\n") != null) return d.set("cluster '{s}': invalid health_check.host", .{c.name});
+        }
         if (c.retry) |r| {
             if (r.budget_percent > 100) return d.set("cluster '{s}': retry.budget_percent must be 0..100", .{c.name});
             if (r.num_retries > 5) return d.set("cluster '{s}': retry.num_retries must be at most 5", .{c.name});
