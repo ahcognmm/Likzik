@@ -6,6 +6,27 @@ deliberately departs from the plan (with the reason).
 
 Legend: **done**, **partial**, **not started**.
 
+## Phase summary
+
+- **Phase 1 (MVP): closed except the gate.** Every day-one requirement is
+  built and tested (HTTP/1.1, HTTPS with kTLS in both directions, TCP/L4,
+  file reload with RCU snapshots, routing, pools, load balancing, passive
+  health). The full integration suite passes with `require_ktls` on Linux
+  7.0 / OpenSSL 3.5.5 (aarch64), and the kTLS key-update question is
+  answered. **Open: the gate**, likzik within 10% of nginx p99 at equal
+  offered load, measured with a separate load generator
+  (`LOADGEN=... bench/vs_nginx.sh`, docs/benchmarking.md). Single-host
+  runs show likzik at or ahead of nginx. Carried over as hardening, not
+  blocking the gate: simulated loop, differential fuzzing, binary upgrade
+  via SCM_RIGHTS, `SEND_ZC`, session-ticket key rotation.
+- **Phase 2:** outlier detection, budgeted retries, circuit breakers,
+  active health checks, core request mirroring and xDS (state of the
+  world) done; cross-worker pool handoff, delta xDS and xDS over TLS not
+  started.
+- **Gateway:** routing, API keys, JWT, local rate limits and transforms
+  done; mTLS identity, OAuth2 introspection, global rate limits (RLS),
+  plugins and gateway mirroring rules not started.
+
 ## Decisions
 
 | Decision | Status | Notes |
