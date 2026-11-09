@@ -25,7 +25,7 @@ WEB_SRC := $(shell find $(WEB)/src -type f 2>/dev/null) \
            $(WEB)/index.html $(WEB)/package.json $(WEB)/vite.config.ts \
            $(WEB)/tsconfig.json $(WEB)/scripts/embed.mjs
 
-.PHONY: all build ui ui-force deps zig run run-gw ui-dev test test-zig test-ui integration proto \
+.PHONY: all build ui ui-force deps zig check-deps run run-gw ui-dev test test-zig test-ui integration proto \
         check-config install uninstall dist clean help
 
 all: build
@@ -33,9 +33,28 @@ all: build
 ## build: compile likzik, likzik-gw, likzik-ui (with the UI) and likzik-stack
 build: ui zig
 
-zig:
+zig: check-deps
 	$(ZIG) build -Doptimize=$(OPTIMIZE)
 	install -m 0755 scripts/likzik-stack $(BIN)/likzik-stack
+
+# System libraries the proxy links, as header:Debian/Ubuntu package.
+SYS_HEADERS := openssl/ssl.h:libssl-dev nghttp2/nghttp2.h:libnghttp2-dev protobuf-c/protobuf-c.h:libprotobuf-c-dev
+INCLUDE_DIRS ?= /usr/include /usr/local/include
+
+## check-deps: verify the system libraries' development headers are installed
+check-deps:
+	@missing=""; for hp in $(SYS_HEADERS); do \
+	  h=$${hp%%:*}; pkg=$${hp##*:}; found=""; \
+	  for d in $(INCLUDE_DIRS); do [ -f "$$d/$$h" ] && found=1; done; \
+	  [ -n "$$found" ] || missing="$$missing $$pkg"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+	  echo "make: missing development headers for:$$missing" >&2; \
+	  echo "  Debian/Ubuntu: sudo apt install$$missing" >&2; \
+	  echo "  Fedora: sudo dnf install openssl-devel libnghttp2-devel protobuf-c-devel" >&2; \
+	  echo "  (set INCLUDE_DIRS if they are installed elsewhere)" >&2; \
+	  exit 1; \
+	fi
 
 ## ui: rebuild the web app and src/ui/assets.zig if its sources changed
 ui: src/ui/assets.zig
