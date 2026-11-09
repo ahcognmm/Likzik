@@ -114,7 +114,7 @@ Legend: **done**, **partial**, **not started**.
 | Hot-swap core steps 1–4 | done |
 | Listener add/remove | done. Workers bind their own SO_REUSEPORT sockets for new listeners (the plan binds on the control thread and hands them over). Removed listeners stop accepting; idle connections close, in-flight ones finish with `Connection: close`. |
 | Binary upgrade via SCM_RIGHTS | not started |
-| xDS (ADS SotW, delta) | not started (model is xDS-shaped) |
+| xDS (ADS SotW, delta) | SotW done (docs/xds.md): ADS over plaintext gRPC (nghttp2, protobuf-c from a wire-compatible subset of the v3 protos), CDS/EDS/LDS/RDS, ACK/NACK through the same validator as file reloads, merged with the config file, warming, reconnect. Delta xDS, TLS to the control plane and SDS not started. |
 | Local admin endpoint | done: `/ready`, `/stats`, `/metrics`, `/server_info`, `POST /reload`, `POST /drain`. Auth model is still an open question. |
 
 ## Gateway layer

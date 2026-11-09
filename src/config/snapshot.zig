@@ -192,6 +192,7 @@ pub const Snapshot = struct {
     /// True when any listener or cluster uses TLS.
     uses_tls: bool,
     access_log: ?model.AccessLog = null,
+    xds: ?model.Xds = null,
     /// Compiled `extensions` state, owned by `ext` (see proxy/filter.zig).
     ext: ?*const filter.Extension = null,
     ext_state: ?*anyopaque = null,
@@ -436,6 +437,13 @@ pub fn build(gpa: std.mem.Allocator, cfg: *const model.Config, reg: *Registry, d
         .require_ktls = cfg.tls.require_ktls,
         .uses_tls = uses_tls,
         .access_log = if (cfg.access_log) |al| .{ .path = try a.dupe(u8, al.path), .format = al.format } else null,
+        .xds = if (cfg.xds) |x| .{
+            .address = try a.dupe(u8, x.address),
+            .node_id = try a.dupe(u8, x.node_id),
+            .node_cluster = try a.dupe(u8, x.node_cluster),
+            .authority = if (x.authority) |au| try a.dupe(u8, au) else null,
+            .connect_timeout_ms = x.connect_timeout_ms,
+        } else null,
     };
     if (cfg.extensions) |ext_cfg| {
         const ext = filter.registered orelse

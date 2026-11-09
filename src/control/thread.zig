@@ -19,7 +19,14 @@ const build_options = @import("build_options");
 const log = std.log.scoped(.control);
 const access_log = @import("../observe/access_log.zig");
 
-pub const Command = enum(u64) { reload = 1, drain = 2, stop = 4 };
+pub const Command = enum(u64) { reload = 1, drain = 2, stop = 4, xds = 8 };
+
+/// Listeners, routes and clusters from xDS, in config-file shape.
+const Fragment = struct {
+    listeners: []const model.Listener = &.{},
+    route_configs: []const model.RouteConfig = &.{},
+    clusters: []const model.Cluster = &.{},
+};
 
 pub const Control = struct {
     gpa: std.mem.Allocator,
@@ -44,6 +51,14 @@ pub const Control = struct {
     /// Access log file, reopened whenever a new generation is applied.
     log_fd: linux.fd_t = -1,
     log_gen: u64 = 0,
+    /// Last xDS fragment that was applied (owned); merged into every reload.
+    xds_fragment: ?[]u8 = null,
+    /// An update from the xDS thread waiting to be applied (borrowed).
+    xds_pending: ?[]const u8 = null,
+    /// 0 idle, 1 requested, 2 done (result in xds_err).
+    xds_state: std.atomic.Value(u8) = .init(0),
+    xds_err: [512]u8 = undefined,
+    xds_err_len: usize = 0,
     /// Workers still running (decremented by worker threads on exit).
     alive: *std.atomic.Value(u32),
 
@@ -76,6 +91,7 @@ pub const Control = struct {
         if (self.watcher) |*wt| wt.deinit();
         if (self.admin_fd >= 0) socket.closeFd(self.admin_fd);
         if (self.log_fd >= 0) socket.closeFd(self.log_fd);
+        if (self.xds_fragment) |f| self.gpa.free(f);
         socket.closeFd(self.cmd_fd);
         self.ring.deinit();
     }
@@ -132,6 +148,7 @@ pub const Control = struct {
             const cmds = self.pending_cmds.swap(0, .acq_rel);
             if (cmds & @intFromEnum(Command.reload) != 0) _ = self.reload("signal");
             if (cmds & @intFromEnum(Command.drain) != 0) self.drain();
+            if (cmds & @intFromEnum(Command.xds) != 0) self.handleXds();
             if (cmds & @intFromEnum(Command.stop) != 0) self.stopped = true;
 
             if (self.watcher != null and watch_i < n and fds[watch_i].revents != 0) {
@@ -166,6 +183,53 @@ pub const Control = struct {
     /// Reads, validates and publishes the config file. Returns true when a
     /// new snapshot was applied.
     pub fn reload(self: *Control, why: []const u8) bool {
+        return self.apply(why, self.xds_fragment);
+    }
+
+    /// xDS thread: applies `fragment` together with the config file and
+    /// waits for the result. Returns null on success, or the reason the
+    /// update was rejected (copied into `err`).
+    pub fn applyXds(self: *Control, fragment: []const u8, err: *[512]u8) ?[]const u8 {
+        self.xds_pending = fragment;
+        self.xds_state.store(1, .release);
+        self.request(.xds);
+        var waited: u32 = 0;
+        while (self.xds_state.load(.acquire) != 2) : (waited += 1) {
+            if (self.stopped or waited > 60_000) {
+                self.xds_state.store(0, .release);
+                return std.fmt.bufPrint(err, "proxy is shutting down", .{}) catch "shutting down";
+            }
+            const ts: linux.timespec = .{ .sec = 0, .nsec = std.time.ns_per_ms };
+            _ = linux.nanosleep(&ts, null);
+        }
+        defer self.xds_state.store(0, .release);
+        if (self.xds_err_len == 0) return null;
+        @memcpy(err[0..self.xds_err_len], self.xds_err[0..self.xds_err_len]);
+        return err[0..self.xds_err_len];
+    }
+
+    fn handleXds(self: *Control) void {
+        if (self.xds_state.load(.acquire) != 1) return;
+        const frag = self.xds_pending.?;
+        self.xds_err_len = 0;
+        if (self.apply("xds update", frag)) {
+            const copy = self.gpa.dupe(u8, frag) catch null;
+            if (copy) |cp| {
+                if (self.xds_fragment) |old| self.gpa.free(old);
+                self.xds_fragment = cp;
+            }
+        } else {
+            const msg = if (self.draining) "proxy is draining" else self.lastError();
+            const n = @min(msg.len, self.xds_err.len);
+            @memcpy(self.xds_err[0..n], msg[0..n]);
+            self.xds_err_len = n;
+        }
+        self.xds_state.store(2, .release);
+    }
+
+    /// Reads the config file, adds the xDS resources, validates, builds and
+    /// publishes a new generation.
+    fn apply(self: *Control, why: []const u8, fragment: ?[]const u8) bool {
         if (self.draining) return false;
         const text = file_watch.readFile(self.gpa, self.config_path) catch |e| {
             var buf: [256]u8 = undefined;
@@ -177,10 +241,21 @@ pub const Control = struct {
         defer arena.deinit();
         var jdiag: [256]u8 = undefined;
         @memset(&jdiag, 0);
-        const cfg = model.parseJson(arena.allocator(), text, &jdiag) catch {
+        var cfg = model.parseJson(arena.allocator(), text, &jdiag) catch {
             self.fail(std.mem.sliceTo(&jdiag, 0));
             return false;
         };
+        if (fragment) |f| {
+            const a = arena.allocator();
+            const fr = std.json.parseFromSliceLeaky(Fragment, a, f, .{ .allocate = .alloc_always }) catch |e| {
+                var buf: [128]u8 = undefined;
+                self.fail(std.fmt.bufPrint(&buf, "xds: translated resources do not parse ({s})", .{@errorName(e)}) catch "xds: translated resources do not parse");
+                return false;
+            };
+            cfg.listeners = std.mem.concat(a, model.Listener, &.{ cfg.listeners, fr.listeners }) catch return false;
+            cfg.route_configs = std.mem.concat(a, model.RouteConfig, &.{ cfg.route_configs, fr.route_configs }) catch return false;
+            cfg.clusters = std.mem.concat(a, model.Cluster, &.{ cfg.clusters, fr.clusters }) catch return false;
+        }
         var diag: snapshot.Diag = .{};
         const snap = snapshot.build(self.gpa, &cfg, self.registry, &diag) catch |e| {
             self.fail(if (e == error.InvalidConfig) diag.message() else @errorName(e));

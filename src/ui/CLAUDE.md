@@ -38,10 +38,12 @@ spacing and copy. Read the relevant one before changing a screen.
 
 ## Honesty rule
 
-The mockups show features likzik does not have yet (xDS control plane,
-request mirroring, mTLS client identity, retry policies, a shared rate
-limit service, per-listener drain progress, endpoint health states,
-notifications, user accounts). **Never render fake data or controls for
+The mockups show features likzik does not have yet (mTLS client identity,
+a shared rate limit service, per-listener drain progress, delta xDS,
+notifications, user accounts). Retry policies, request mirroring, active
+health checks and xDS exist in the proxy now, but the console does not
+edit them yet: show them only from the config file or `/stats`.
+**Never render fake data or controls for
 them.** Either omit the element, or show it as a dashed "not available
 in this version" panel when the layout depends on it. Every number on
 screen comes from the config, the admin endpoint, or the change history.

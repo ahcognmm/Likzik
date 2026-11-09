@@ -19,6 +19,6 @@ pub const assets = [_]Asset{
     .{ .path = "/assets/ibm-plex-sans-latin-700-normal-Bth3BMcD.woff", .mime = "font/woff", .immutable = true, .data = @embedFile("web/dist/assets/ibm-plex-sans-latin-700-normal-Bth3BMcD.woff") },
     .{ .path = "/assets/ibm-plex-sans-latin-700-normal-Bxkt5Cjx.woff2", .mime = "font/woff2", .immutable = true, .data = @embedFile("web/dist/assets/ibm-plex-sans-latin-700-normal-Bxkt5Cjx.woff2") },
     .{ .path = "/assets/index-BFhqeVtM.css", .mime = "text/css; charset=utf-8", .immutable = true, .data = @embedFile("web/dist/assets/index-BFhqeVtM.css") },
-    .{ .path = "/assets/index-EH8UVCo5.js", .mime = "text/javascript; charset=utf-8", .immutable = true, .data = @embedFile("web/dist/assets/index-EH8UVCo5.js") },
+    .{ .path = "/assets/index-DDFtLXav.js", .mime = "text/javascript; charset=utf-8", .immutable = true, .data = @embedFile("web/dist/assets/index-DDFtLXav.js") },
     .{ .path = "/index.html", .mime = "text/html; charset=utf-8", .immutable = false, .data = @embedFile("web/dist/index.html") },
 };

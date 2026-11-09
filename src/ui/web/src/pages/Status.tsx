@@ -7,7 +7,9 @@ const ago = (ms: number) => { const s = Math.round((Date.now() - ms) / 1000); re
 const pct = (a: number, b: number) => (b ? ((100 * a) / b).toFixed(1) + "%" : "None yet");
 
 export function StatusPage() {
-  const { server: si, stats, adminUp, path, history, refreshHistory, rps } = useStore();
+  const { server: si, stats, adminUp, path, history, refreshHistory, rps, live } = useStore();
+  const xds = live?.xds;
+  const xdsUp = stats?.xds_connected === 1;
   const [errOpen, setErrOpen] = useState(false);
   useEffect(() => { refreshHistory(); }, [refreshHistory]);
   const st = stats ?? {};
@@ -36,10 +38,19 @@ export function StatusPage() {
           <dt>Reloads</dt><dd>{si ? `${si.config.reloads_ok} applied, ${si.config.reloads_failed} rejected since the proxy started` : "Unknown"}</dd>
         </dl>
       </section>
-      <section className="panel panel-body" style={{ borderStyle: "dashed" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}><h2>Control plane (xDS)</h2><Tag>Not available</Tag></div>
-        <p className="small" style={{ marginTop: 10 }}>This version reads its configuration from the file only. An Envoy-compatible xDS control plane is planned; when it arrives it will feed the same validator and show up here.</p>
-      </section>
+      {xds ? <section className="panel panel-body">
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}><h2>Control plane (xDS)</h2>
+          <Tag kind={xdsUp ? "ok" : "err"}>{xdsUp ? "Connected" : stats ? "Disconnected" : "Checking"}</Tag></div>
+        <p className="mono small" style={{ marginTop: 6, wordBreak: "break-all" }}>{xds.address} as {xds.node_id}</p>
+        <dl className="facts">
+          <dt>Owns</dt><dd>The listeners, routes and clusters it sends. They are not in the config file, so the editors here do not show them.</dd>
+          <dt>Updates</dt><dd>{stats ? `${stats.xds_updates_accepted ?? 0} accepted, ${stats.xds_updates_rejected ?? 0} rejected (NACKed) since the proxy started` : "Unknown"}</dd>
+          <dt>When down</dt><dd>The last accepted configuration keeps serving while the proxy reconnects.</dd>
+        </dl>
+      </section> : <section className="panel panel-body" style={{ borderStyle: "dashed" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}><h2>Control plane (xDS)</h2><Tag>Not configured</Tag></div>
+        <p className="small" style={{ marginTop: 10 }}>Add an <span className="mono">xds</span> section to the config file to take listeners, routes and clusters from an Envoy-compatible control plane. Its updates go through the same validator as this file.</p>
+      </section>}
     </div>
 
     <section className="panel" aria-labelledby="ver">

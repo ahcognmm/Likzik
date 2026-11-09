@@ -1,0 +1,156 @@
+// Wire-compatible subset of the Envoy xDS v3 API: only the fields likzik
+// reads, with Envoy's field numbers. Protobuf skips unknown fields, so these
+// messages decode what any xDS control plane sends. Package names do not
+// travel on the wire (type URLs are compared as strings in xds.zig).
+//
+// Regenerate the C code with `make proto` (needs protoc and protoc-c).
+syntax = "proto3";
+
+package likzik.xds;
+
+message Any {
+  string type_url = 1;
+  bytes value = 2;
+}
+
+message Duration {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}
+
+message UInt32Value {
+  uint32 value = 1;
+}
+
+message Status {  // google.rpc.Status
+  int32 code = 1;
+  string message = 2;
+}
+
+message Node {  // envoy.config.core.v3.Node
+  string id = 1;
+  string cluster = 2;
+  string user_agent_name = 6;
+}
+
+message DiscoveryRequest {  // envoy.service.discovery.v3
+  string version_info = 1;
+  Node node = 2;
+  repeated string resource_names = 3;
+  string type_url = 4;
+  string response_nonce = 5;
+  Status error_detail = 6;
+}
+
+message DiscoveryResponse {
+  string version_info = 1;
+  repeated Any resources = 2;
+  string type_url = 4;
+  string nonce = 5;
+}
+
+message SocketAddress {  // envoy.config.core.v3
+  int32 protocol = 1;  // 0 TCP, 1 UDP
+  string address = 2;
+  uint32 port_value = 3;
+}
+
+message Address {
+  SocketAddress socket_address = 1;
+}
+
+message Endpoint {  // envoy.config.endpoint.v3
+  Address address = 1;
+}
+
+message LbEndpoint {
+  Endpoint endpoint = 1;
+  int32 health_status = 2;  // 0 UNKNOWN, 1 HEALTHY, 2 UNHEALTHY, 3 DRAINING, 4 TIMEOUT, 5 DEGRADED
+  UInt32Value load_balancing_weight = 4;
+}
+
+message LocalityLbEndpoints {
+  repeated LbEndpoint lb_endpoints = 2;
+  UInt32Value load_balancing_weight = 3;
+  uint32 priority = 5;
+}
+
+message ClusterLoadAssignment {
+  string cluster_name = 1;
+  repeated LocalityLbEndpoints endpoints = 2;
+}
+
+message EdsClusterConfig {  // envoy.config.cluster.v3.Cluster.EdsClusterConfig
+  string service_name = 2;
+}
+
+message Cluster {  // envoy.config.cluster.v3
+  string name = 1;
+  int32 type = 2;  // 0 STATIC, 1 STRICT_DNS, 2 LOGICAL_DNS, 3 EDS, 4 ORIGINAL_DST
+  EdsClusterConfig eds_cluster_config = 3;
+  Duration connect_timeout = 4;
+  int32 lb_policy = 6;  // 0 ROUND_ROBIN, 1 LEAST_REQUEST, 2 RING_HASH, 3 RANDOM, 5 MAGLEV
+  ClusterLoadAssignment load_assignment = 33;
+}
+
+message Filter {  // envoy.config.listener.v3
+  string name = 1;
+  Any typed_config = 4;
+}
+
+message FilterChain {
+  repeated Filter filters = 3;
+}
+
+message Listener {
+  string name = 1;
+  Address address = 2;
+  repeated FilterChain filter_chains = 3;
+}
+
+message Rds {  // envoy.extensions.filters.network.http_connection_manager.v3
+  string route_config_name = 2;
+}
+
+message HttpConnectionManager {
+  string stat_prefix = 2;
+  Rds rds = 3;
+  RouteConfiguration route_config = 4;
+}
+
+message TcpProxy {  // envoy.extensions.filters.network.tcp_proxy.v3
+  string stat_prefix = 1;
+  string cluster = 2;
+}
+
+message RouteMatch {  // envoy.config.route.v3
+  string prefix = 1;
+  string path = 2;
+  repeated Any headers = 6;      // HeaderMatcher (only counted: not supported)
+  Any safe_regex = 10;           // RegexMatcher (not supported)
+  string path_separated_prefix = 14;
+}
+
+message RouteAction {
+  string cluster = 1;
+  Any weighted_clusters = 3;     // not supported
+  string prefix_rewrite = 5;
+  Duration timeout = 8;
+}
+
+message Route {
+  RouteMatch match = 1;
+  RouteAction route = 2;
+  string name = 14;
+}
+
+message VirtualHost {
+  string name = 1;
+  repeated string domains = 2;
+  repeated Route routes = 3;
+}
+
+message RouteConfiguration {
+  string name = 1;
+  repeated VirtualHost virtual_hosts = 2;
+}

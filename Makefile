@@ -25,7 +25,7 @@ WEB_SRC := $(shell find $(WEB)/src -type f 2>/dev/null) \
            $(WEB)/index.html $(WEB)/package.json $(WEB)/vite.config.ts \
            $(WEB)/tsconfig.json $(WEB)/scripts/embed.mjs
 
-.PHONY: all build ui ui-force deps zig run run-gw ui-dev test test-zig test-ui integration \
+.PHONY: all build ui ui-force deps zig run run-gw ui-dev test test-zig test-ui integration proto \
         check-config install uninstall dist clean help
 
 all: build
@@ -88,6 +88,11 @@ test: test-zig test-ui
 integration: zig
 	tests/integration/run.sh
 	tests/integration/gateway.sh
+	tests/integration/xds.sh
+
+## proto: regenerate proto/xds.pb-c.{c,h} from proto/xds.proto (needs protoc-c)
+proto:
+	cd proto && protoc-c --c_out=. xds.proto
 
 test-zig:
 	$(ZIG) build test

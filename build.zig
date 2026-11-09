@@ -22,6 +22,15 @@ pub fn build(b: *std.Build) void {
     lib.link_libc = true;
     lib.linkSystemLibrary("ssl", .{});
     lib.linkSystemLibrary("crypto", .{});
+    // xDS: gRPC over HTTP/2 (nghttp2) with protobuf-c messages generated from
+    // proto/xds.proto (the generated C is committed; `make proto` refreshes it).
+    lib.linkSystemLibrary("nghttp2", .{});
+    lib.linkSystemLibrary("protobuf-c", .{});
+    lib.addIncludePath(b.path("proto"));
+    lib.addCSourceFile(.{ .file = b.path("proto/xds.pb-c.c"), .flags = &.{"-std=c99"} });
+    const xds_c = b.addTranslateC(.{ .root_source_file = b.path("proto/xds_c.h"), .target = target, .optimize = optimize });
+    xds_c.addIncludePath(b.path("proto"));
+    lib.addImport("xds_c", xds_c.createModule());
 
     const exe = b.addExecutable(.{
         .name = "likzik",

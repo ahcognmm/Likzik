@@ -118,6 +118,11 @@ fn workerEntry(gpa: std.mem.Allocator, id: u16, shared: *worker_mod.Shared) void
     worker_mod.Worker.main(gpa, id, shared);
 }
 
+fn applyXds(ctx: *anyopaque, fragment: []const u8, err: *[512]u8) ?[]const u8 {
+    const control: *Control = @ptrCast(@alignCast(ctx));
+    return control.applyXds(fragment, err);
+}
+
 fn controlEntry(c: *Control) void {
     c.run();
 }
@@ -242,6 +247,15 @@ pub fn run(init: std.process.Init) !u8 {
     }
     defer control.deinit();
     const control_thread = try std.Thread.spawn(.{}, controlEntry, .{&control});
+
+    // xDS: dynamic listeners, routes and clusters from a control plane.
+    var xds_client: ?*likzik.config.xds.Client = null;
+    if (first.xds) |x| {
+        xds_client = try likzik.config.xds.Client.init(gpa, x, &control, applyXds);
+        shared.xds = xds_client;
+        try xds_client.?.start();
+    }
+    defer if (xds_client) |xc| xc.deinit();
 
     {
         var buf: [64]u8 = undefined;

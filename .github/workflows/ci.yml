@@ -23,7 +23,7 @@ jobs:
       - name: Install system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libssl-dev nginx netcat-openbsd curl openssl python3
+          sudo apt-get install -y --no-install-recommends libssl-dev libnghttp2-dev libprotobuf-c-dev nginx netcat-openbsd curl openssl python3 python3-pip
           sudo systemctl stop nginx || true
 
       - name: Unit tests (debug, safety checks on)
@@ -42,6 +42,11 @@ jobs:
 
       - name: Integration tests (gateway)
         run: LIKZIK_ARGS=--allow-old-kernel tests/integration/gateway.sh
+
+      - name: Integration tests (xDS)
+        run: |
+          pip install --break-system-packages -q grpcio xds-protos
+          LIKZIK_ARGS=--allow-old-kernel tests/integration/xds.sh
 
       - name: Config examples validate
         run: zig-out/bin/likzik-gw -c config/dev.json --check

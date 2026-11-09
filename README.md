@@ -33,7 +33,8 @@ likzik-stack --no-ui -c cfg.json -- --workers 8               # gateway only
 
 ## Build
 
-Requires Zig 0.17.x, OpenSSL 3.x development files (`libssl-dev`), and
+Requires Zig 0.17.x, the development files of OpenSSL 3.x, nghttp2 and
+protobuf-c (`libssl-dev libnghttp2-dev libprotobuf-c-dev`), and
 Linux 6.14+ (6.18 LTS in production).
 
 ```sh
@@ -66,6 +67,12 @@ zig-out/bin/likzik-ui -c /etc/likzik/likzik.json      # http://127.0.0.1:9902/
 ```
 
 See [docs/dashboard.md](docs/dashboard.md).
+
+## Dynamic configuration (xDS)
+
+Listeners, routes, clusters and endpoints can also come from an
+Envoy-compatible control plane over ADS; updates are validated like a file
+reload, then ACKed or NACKed. See [docs/xds.md](docs/xds.md).
 
 ## Run
 

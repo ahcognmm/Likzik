@@ -16,13 +16,28 @@ pub const Config = struct {
     admin: ?Admin = null,
     limits: Limits = .{},
     tls: TlsSettings = .{},
-    listeners: []const Listener,
+    listeners: []const Listener = &.{},
     route_configs: []const RouteConfig = &.{},
     clusters: []const Cluster = &.{},
     access_log: ?AccessLog = null,
+    /// Dynamic configuration from an xDS control plane (ADS, state of the
+    /// world). Listeners, routes and clusters from it are added to the ones
+    /// in this file. Read at startup only.
+    xds: ?Xds = null,
     /// Opaque configuration for the binary's extension (e.g. the API
     /// gateway in likzik-gw). The core passes it through unread.
     extensions: ?std.json.Value = null,
+};
+
+pub const Xds = struct {
+    /// ADS server, "ip:port" (gRPC over plaintext HTTP/2).
+    address: []const u8,
+    /// Node identity sent to the control plane.
+    node_id: []const u8,
+    node_cluster: []const u8 = "likzik",
+    /// :authority for the gRPC stream (default: the address).
+    authority: ?[]const u8 = null,
+    connect_timeout_ms: u32 = 5_000,
 };
 
 pub const AccessLog = struct {

@@ -42,7 +42,11 @@ fn findRouteConfig(cfg: *const model.Config, name: []const u8) bool {
 const known_methods = [_][]const u8{ "GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS", "TRACE", "PATCH" };
 
 pub fn validate(cfg: *const model.Config, d: *Diag) error{InvalidConfig}!void {
-    if (cfg.listeners.len == 0) return d.set("no listeners", .{});
+    if (cfg.listeners.len == 0 and cfg.xds == null) return d.set("no listeners", .{});
+    if (cfg.xds) |x| {
+        _ = Address.parse(x.address) catch return d.set("xds: invalid address '{s}' (ip:port)", .{x.address});
+        if (x.node_id.len == 0) return d.set("xds: node_id is empty", .{});
+    }
     try dupName(model.Listener, cfg.listeners, "listener", d);
     try dupName(model.RouteConfig, cfg.route_configs, "route_config", d);
     try dupName(model.Cluster, cfg.clusters, "cluster", d);
@@ -172,7 +176,9 @@ pub fn validate(cfg: *const model.Config, d: *Diag) error{InvalidConfig}!void {
     }
 
     for (cfg.clusters) |c| {
-        if (c.endpoints.len == 0) return d.set("cluster '{s}': no endpoints", .{c.name});
+        // With xDS, a cluster may be waiting for its endpoints (EDS): it
+        // answers 503 until they arrive.
+        if (c.endpoints.len == 0 and cfg.xds == null) return d.set("cluster '{s}': no endpoints", .{c.name});
         if (c.endpoints.len > 4096) return d.set("cluster '{s}': too many endpoints", .{c.name});
         if (c.max_connect_attempts == 0) return d.set("cluster '{s}': max_connect_attempts must be >= 1", .{c.name});
         if (c.connect_timeout_ms == 0) return d.set("cluster '{s}': connect_timeout_ms must be > 0", .{c.name});

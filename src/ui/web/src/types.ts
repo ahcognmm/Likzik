@@ -55,6 +55,7 @@ export interface Gateway {
 export interface Config {
   version?: string; workers?: number; admin?: { address: string };
   limits?: Record<string, number>; tls?: { require_ktls?: boolean };
+  xds?: { address: string; node_id: string; node_cluster?: string; authority?: string; connect_timeout_ms?: number };
   listeners: Listener[]; route_configs?: RouteConfig[]; clusters?: Cluster[];
   extensions?: { gateway?: Gateway };
 }

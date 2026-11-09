@@ -50,6 +50,7 @@ pub const Shared = struct {
     /// Active health check results, one byte per endpoint id.
     ep_down: []const std.atomic.Value(u8) = &.{},
     health: ?*@import("../upstream/active_health.zig").ActiveHealth = null,
+    xds: ?*@import("../config/sources/xds.zig").Client = null,
     pbuf_count: u16 = 256,
     pin_cpus: bool = true,
 };

@@ -21,6 +21,8 @@ pub const config = struct {
     pub const validate = @import("config/validate.zig");
     pub const snapshot = @import("config/snapshot.zig");
     pub const file_watch = @import("config/sources/file_watch.zig");
+    pub const xds = @import("config/sources/xds.zig");
+    pub const xds_translate = @import("config/sources/xds_translate.zig");
 };
 
 test {
