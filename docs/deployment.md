@@ -41,16 +41,17 @@ building from source, configure with `enable-ktls`).
 
 Versions matter for TLS 1.3:
 
-- **OpenSSL 3.2 or newer** puts both directions in the kernel. OpenSSL
-  3.0 (Ubuntu 24.04) offloads only sending for TLS 1.3, so those
-  connections count as `tls_userspace` and take the slower data path.
-- **Key updates.** With kTLS sending, a client that asks the server to
-  update its keys (a TLS 1.3 KeyUpdate with `update_requested`) loses the
-  connection under OpenSSL 3.0, even on Linux 7.0 (seen in CI). Clients
-  rarely do this, but long-lived connections can. Changing kTLS keys also
-  needs Linux 6.14+, which is why likzik asks for it; whether OpenSSL 3.2+
-  completes the update is not tested yet (run `tests/integration/run.sh`
-  on such a host to find out).
+- **Use OpenSSL 3.5 or newer** (Ubuntu 26.04 ships it). Verified on
+  Linux 7.0 with OpenSSL 3.5.5: TLS 1.3 runs in the kernel in both
+  directions, and key updates (including ones the client requests from
+  the server) work.
+- **OpenSSL 3.0** (Ubuntu 24.04) offloads only sending for TLS 1.3, so
+  those connections count as `tls_userspace` and take the slower data
+  path; and a client that asks the server to update its keys (a TLS 1.3
+  KeyUpdate with `update_requested`) loses the connection. Clients rarely
+  do this, but long-lived connections can. OpenSSL 3.2-3.4 are untested.
+- Changing kTLS keys needs Linux 6.14 or newer, which is why likzik
+  requires it.
 
 ## Containers (Docker, containerd, Kubernetes)
 
