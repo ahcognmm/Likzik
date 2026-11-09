@@ -20,9 +20,9 @@ Legend: **done**, **partial**, **not started**.
   blocking the gate: simulated loop, differential fuzzing, binary upgrade
   via SCM_RIGHTS, `SEND_ZC`, session-ticket key rotation.
 - **Phase 2:** outlier detection, budgeted retries, circuit breakers,
-  active health checks, core request mirroring and xDS (state of the
-  world) done; cross-worker pool handoff, delta xDS and xDS over TLS not
-  started.
+  active health checks, core request mirroring, cross-worker pool
+  handoff and xDS (state of the world) done; delta xDS and xDS over TLS
+  not started.
 - **Gateway:** routing, API keys, JWT, local rate limits and transforms
   done; mTLS identity, OAuth2 introspection, global rate limits (RLS),
   plugins and gateway mirroring rules not started.
@@ -125,7 +125,7 @@ Legend: **done**, **partial**, **not started**.
 | Circuit breaking (connections, requests, retries) | 2 | done, per-worker shares of process-wide limits. No pending queue (HTTP/1.1 connects at once). |
 | Active health (TCP/HTTP checks off the workers, results shared) | 2 | done: one checker thread; results in a shared per-endpoint table read by the load balancers. HTTP checks over TLS not started. |
 | Request mirroring (core mechanism) | 2 | done for core routes: bodiless requests, sampled, marked, own connections, bounded per worker, response discarded. Body teeing, TLS shadow clusters, per-route shadow metrics and gateway mirror rules not started. |
-| Cross-worker pool handoff | 2 | not started |
+| Cross-worker pool handoff | 2 | done: idle connections beyond a worker's share are parked in a shared per-endpoint pool (spinlock-protected stack, not lock-free: the critical section is a few stores) and adopted by other workers after a liveness peek; plain and kTLS connections move, userspace-TLS ones stay. docs/upstreams.md |
 | Ring hash / Maglev | 3 | not started |
 
 ## Dynamic configuration

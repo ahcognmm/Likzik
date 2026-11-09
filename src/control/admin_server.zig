@@ -79,6 +79,7 @@ fn handle(c: *Control, method: []const u8, path: []const u8, body: *std.ArrayLis
         inline for (info.field_names, info.field_values) |fname, value| {
             try body.print(gpa, "{s}: {d}\n", .{ fname, stats.sum(c.shared.stats, @enumFromInt(value)) });
         }
+        if (c.shared.conn_pool) |sp| try body.print(gpa, "upstream_cx_shared_idle: {d}\n", .{sp.parked.load(.monotonic)});
         if (c.shared.xds) |x| try body.print(gpa, "xds_connected: {d}\nxds_updates_accepted: {d}\nxds_updates_rejected: {d}\n", .{ @intFromBool(x.connected.load(.monotonic)), x.accepted.load(.monotonic), x.rejected.load(.monotonic) });
         if (c.shared.health) |h| try body.print(gpa, "health_checks_failed: {d}\nendpoints_unhealthy: {d}\n", .{ h.checks_failed.load(.monotonic), h.unhealthy.load(.monotonic) });
     } else if (get and std.mem.eql(u8, path, "/metrics")) {

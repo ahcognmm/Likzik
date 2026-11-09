@@ -13,6 +13,31 @@ are split evenly across workers, rounded up.
   "endpoints": [ { "address": "10.0.1.10:8000" }, { "address": "10.0.1.11:8000" } ] }
 ```
 
+## Connection pools shared between workers
+
+Each worker keeps its share of idle connections per endpoint
+(`max_idle_per_endpoint` / workers, at least 1) in its own list. Idle
+connections beyond that share are **parked** in a pool all workers can
+draw from, up to `max_idle_per_endpoint` per endpoint; past that they are
+closed. A worker with no idle connection of its own takes a parked one
+before opening a new connection, so connections opened by a busy worker
+also serve the others.
+
+- Parking waits until the connection has no ring operation left on its
+  worker, and is abandoned if any byte, EOF or error arrives meanwhile.
+- A taken connection is checked first (a non-blocking peek): one the
+  upstream closed while parked is discarded, never reused
+  (`upstream_cx_handoff_stale`).
+- Parked connections close after the cluster's `idle_timeout_ms`.
+- Plain and kTLS connections are shared; connections doing TLS in
+  userspace stay with their worker.
+- `share_idle_connections: false` on a cluster turns it off.
+
+Counters: `upstream_cx_parked`, `upstream_cx_handoff`,
+`upstream_cx_handoff_stale`; `/stats` also shows `upstream_cx_shared_idle`.
+With 128 clients and `max_idle_per_endpoint: 8` on 2 workers, sharing
+raised throughput from 33k to 56k requests/s and halved p99 (82 to 42 ms).
+
 ## Passive health and outlier detection
 
 - `eject_after_failures` (default 3): consecutive connect failures (refused,

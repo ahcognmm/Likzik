@@ -18,6 +18,7 @@ const HeadScanner = @import("../http1/parser.zig").HeadScanner;
 const snapshot = @import("../config/snapshot.zig");
 const socket = @import("../net/socket.zig");
 const breaker = @import("breaker.zig");
+const shared_pool = @import("shared_pool.zig");
 const Address = @import("../net/addr.zig").Address;
 const http = @import("../proxy/http.zig");
 const tls_backend = @import("../tls/backend.zig");
@@ -50,6 +51,11 @@ pub const Up = struct {
     idle_next: ?u32 = null,
     /// Taken from the pool rather than freshly connected.
     reused: bool = false,
+    /// Closing in order to be parked in the shared pool (cleared if
+    /// anything arrives on the socket meanwhile).
+    park: bool = false,
+    /// The cluster that last used it shares idle connections.
+    share: bool = true,
     idle_timeout_ms: u32,
     max_idle: u32,
     connect_ts: linux.kernel_timespec = .{ .sec = 0, .nsec = 0 },
@@ -87,11 +93,13 @@ pub fn acquire(w: *Worker, ep: *const snapshot.Endpoint, c: *const snapshot.Clus
         u.reused = true;
         u.idle_timeout_ms = c.idle_timeout_ms;
         u.max_idle = c.max_idle_per_endpoint;
+        u.share = c.share_idle;
         w.stats.inc(.upstream_cx_pool_hit);
         return ui;
     }
     const load = try w.cluster_load.get(w.gpa, c.id);
     if (load.active_cx >= breaker.share(c.breakers.max_connections, w.shared.stats.len)) return error.CircuitOpen;
+    if (c.share_idle) if (w.shared.conn_pool) |sp| if (adopt(w, sp, ep, c, key, load)) |ui| return ui;
     const fd = try socket.connectSocket(&ep.addr);
     const ui = w.ups.alloc() orelse {
         socket.closeFd(fd);
@@ -107,6 +115,7 @@ pub fn acquire(w: *Worker, ep: *const snapshot.Endpoint, c: *const snapshot.Clus
         .max_idle = c.max_idle_per_endpoint,
         .pool_key = key,
         .cb_cluster = null,
+        .share = c.share_idle,
     };
     if (c.tls) |t| {
         // Created now so it holds a reference on the cluster's SSL_CTX even
@@ -139,6 +148,54 @@ fn unlinkIdle(w: *Worker, ui: u32) void {
 }
 
 /// Puts a connection that finished a response cleanly back in the pool.
+/// Takes an idle connection another worker parked, after checking that the
+/// upstream did not close it meanwhile.
+fn adopt(w: *Worker, sp: *shared_pool.SharedPool, ep: *const snapshot.Endpoint, c: *const snapshot.Cluster, key: u32, load: *breaker.ClusterState) ?u32 {
+    var tries: u8 = 0;
+    while (tries < 4) : (tries += 1) {
+        const e = sp.take(ep.id, key, w.now_ms) orelse return null;
+        if (!shared_pool.alive(e.fd)) {
+            shared_pool.discard(&e);
+            w.stats.inc(.upstream_cx_handoff_stale);
+            continue;
+        }
+        const ui = w.ups.alloc() orelse {
+            _ = sp.park(ep.id, e, c.max_idle_per_endpoint) or blk: {
+                shared_pool.discard(&e);
+                break :blk false;
+            };
+            return null;
+        };
+        const u = get(w, ui);
+        u.* = .{
+            .fd = e.fd,
+            .ep_id = ep.id,
+            .addr = e.addr,
+            .state = .busy,
+            .reused = true,
+            .idle_timeout_ms = c.idle_timeout_ms,
+            .max_idle = c.max_idle_per_endpoint,
+            .pool_key = key,
+            .cb_cluster = c.id,
+            .share = c.share_idle,
+            .tls = e.tls,
+            .tls_mode = e.tls_mode,
+        };
+        load.active_cx += 1;
+        w.stats.inc(.upstream_cx_active);
+        w.stats.inc(.upstream_cx_handoff);
+        return ui;
+    }
+    return null;
+}
+
+/// Idle connections a worker keeps for itself per endpoint before parking
+/// the rest in the shared pool.
+fn keepLocal(w: *Worker, max_idle: u32) u32 {
+    const workers: u32 = @intCast(@max(w.shared.stats.len, 1));
+    return @max(1, (max_idle + workers - 1) / workers);
+}
+
 pub fn release(w: *Worker, ui: u32) void {
     const u = get(w, ui);
     u.owner = null;
@@ -146,7 +203,18 @@ pub fn release(w: *Worker, ui: u32) void {
         close(w, ui);
         return;
     };
-    if (st.idle_count >= u.max_idle or w.draining or !u.in.isEmpty() or !u.out.isEmpty()) {
+    if (w.draining or !u.in.isEmpty() or !u.out.isEmpty()) {
+        close(w, ui);
+        return;
+    }
+    // Over this worker's share: park it for other workers (userspace TLS
+    // connections cannot move between workers).
+    if (u.share and w.shared.conn_pool != null and u.tls_mode != .user and st.idle_count >= keepLocal(w, u.max_idle)) {
+        u.park = true;
+        close(w, ui);
+        return;
+    }
+    if (st.idle_count >= u.max_idle) {
         close(w, ui);
         return;
     }
@@ -178,8 +246,22 @@ pub fn maybeFree(w: *Worker, ui: u32) void {
     if (u.state != .closing or u.pending > 0) return;
     u.out.clear(&w.segs, w);
     u.in.release(&w.blocks);
-    if (u.tls) |t| Tls.freeConn(t);
-    socket.closeFd(u.fd);
+    const parked = u.park and u.tls_mode != .user and u.in.isEmpty() and w.shared.conn_pool != null and
+        w.shared.conn_pool.?.park(u.ep_id, .{
+            .fd = u.fd,
+            .addr = u.addr,
+            .pool_key = u.pool_key,
+            .tls = u.tls,
+            .tls_mode = u.tls_mode,
+            .parked_ms = w.now_ms,
+            .idle_timeout_ms = u.idle_timeout_ms,
+        }, u.max_idle);
+    if (parked) {
+        w.stats.inc(.upstream_cx_parked);
+    } else {
+        if (u.tls) |t| Tls.freeConn(t);
+        socket.closeFd(u.fd);
+    }
     if (u.cb_cluster) |id| if (w.cluster_load.get(w.gpa, id)) |l| {
         l.active_cx -|= 1;
     } else |_| {};

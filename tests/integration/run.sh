@@ -96,6 +96,7 @@ cat > "$WORK/likzik.json" <<JSON
     { "name": "retryreset", "domains": ["retryreset.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "retryreset" } } ] },
     { "name": "mirror", "domains": ["mirror.test"], "routes": [ { "match": { "prefix": "/" },
       "route": { "cluster": "echo", "mirror": { "cluster": "shadow", "methods": ["GET"] } } } ] },
+    { "name": "shared", "domains": ["shared.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "shared" } } ] },
     { "name": "hc", "domains": ["hc.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "hc" } } ] },
     { "name": "limited", "domains": ["limited.test"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "limited" } } ] },
     { "name": "default", "domains": ["*"], "routes": [ { "match": { "prefix": "/" }, "route": { "cluster": "web" } } ] } ] } ],
@@ -108,6 +109,7 @@ cat > "$WORK/likzik.json" <<JSON
       "endpoints": [ { "address": "127.0.0.1:19005" }, { "address": "127.0.0.1:19002" } ] },
     { "name": "retryreset", "lb_policy": "round_robin", "retry": { "retry_on": ["reset"] },
       "endpoints": [ { "address": "127.0.0.1:19003" }, { "address": "127.0.0.1:19002" } ] },
+    { "name": "shared", "max_idle_per_endpoint": 2, "endpoints": [ { "address": "127.0.0.1:19003" } ] },
     { "name": "shadow", "connect_timeout_ms": 500, "endpoints": [ { "address": "127.0.0.1:19007" } ] },
     { "name": "hc", "lb_policy": "round_robin",
       "health_check": { "path": "/", "interval_ms": 200, "timeout_ms": 150, "unhealthy_threshold": 2, "healthy_threshold": 1 },
@@ -250,6 +252,24 @@ sleep 1
 check "HTTP check takes a 5xx endpoint out" "$(for i in $(seq 10); do curl -s -H 'Host: hc.test' $P/; done | sort -u | tr -d '\n')" "b"
 check "TCP check marks a refused endpoint unhealthy" "$(curl -s 127.0.0.1:19901/stats | grep '^endpoints_unhealthy:')" "endpoints_unhealthy: 2"
 check "health events logged" "$(grep -c 'is unhealthy' "$WORK/likzik.log")" "2"
+
+echo "connections shared between workers"
+st() { curl -s 127.0.0.1:19901/stats | grep "^$1:" | awk '{print $2}'; }
+cx_before=$(st upstream_cx_total)
+for round in $(seq 6); do
+  seq 8 | xargs -P 8 -I{} curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: shared.test' "$P/s{}" >> "$WORK/shared.txt"
+done
+check "every request answered" "$(sort -u "$WORK/shared.txt" | tr -d '\n')" "200"
+check "idle connections parked for other workers" "$(st upstream_cx_parked | awk '{print ($1 > 0)}')" "1"
+check "and taken over by other workers" "$(st upstream_cx_handoff | awk '{print ($1 > 0)}')" "1"
+check "fewer upstream connections than requests" "$(( $(st upstream_cx_total) - cx_before < 48 ))" "1"
+parked_now=$(curl -s 127.0.0.1:19901/stats | grep '^upstream_cx_shared_idle:' | awk '{print $2}')
+kill "$EPID"; wait "$EPID" 2>/dev/null
+python3 "$ROOT/tests/integration/echo_server.py" 19003 >/dev/null 2>&1 & EPID=$!; sleep 0.3
+check "requests work after the upstream restarts" "$(for i in $(seq 4); do code -H 'Host: shared.test' $P/after; echo; done | sort -u | tr -d '\n')" "200"
+if [ "${parked_now:-0}" -gt 0 ]; then
+  check "parked connections the upstream closed are detected, not reused" "$(st upstream_cx_handoff_stale | awk '{print ($1 > 0)}')" "1"
+fi
 
 echo "mirroring"
 timeout 5 nc -l 127.0.0.1 19007 > "$WORK/shadow.txt" & NCP=$!; sleep 0.3

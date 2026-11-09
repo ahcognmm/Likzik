@@ -53,6 +53,7 @@ pub const upstream = struct {
     pub const pool = @import("upstream/pool.zig");
     pub const breaker = @import("upstream/breaker.zig");
     pub const active_health = @import("upstream/active_health.zig");
+    pub const shared_pool = @import("upstream/shared_pool.zig");
 };
 
 pub const tls = struct {

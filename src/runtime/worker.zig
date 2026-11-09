@@ -51,6 +51,8 @@ pub const Shared = struct {
     ep_down: []const std.atomic.Value(u8) = &.{},
     health: ?*@import("../upstream/active_health.zig").ActiveHealth = null,
     xds: ?*@import("../config/sources/xds.zig").Client = null,
+    /// Idle upstream connections shared between workers.
+    conn_pool: ?*@import("../upstream/shared_pool.zig").SharedPool = null,
     pbuf_count: u16 = 256,
     pin_cpus: bool = true,
 };

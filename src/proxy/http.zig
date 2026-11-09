@@ -1155,6 +1155,8 @@ pub fn onUpRecv(w: *Worker, ui: u32, cqe: *const linux.io_uring_cqe) void {
         u.pending -= 1;
     }
     defer if (u.state == .closing and u.pending == 0) w.reapLater(.up, ui, w.ups.gen(ui));
+    // Anything but the cancellation while parking: the socket is not clean.
+    if (u.state == .closing and cqe.res != -@as(i32, @intFromEnum(linux.E.CANCELED))) u.park = false;
 
     if (cqe.res < 0) {
         switch (@as(linux.E, @enumFromInt(-cqe.res))) {

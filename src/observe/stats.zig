@@ -22,6 +22,11 @@ pub const Counter = enum {
     upstream_cx_connect_fail,
     upstream_cx_connect_timeout,
     upstream_cx_pool_hit,
+    /// Idle connections parked for other workers, taken from other workers,
+    /// and parked ones found closed by the upstream when taken.
+    upstream_cx_parked,
+    upstream_cx_handoff,
+    upstream_cx_handoff_stale,
     upstream_cx_idle,
     upstream_rq_total,
     upstream_rq_retry,

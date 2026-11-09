@@ -188,12 +188,15 @@ pub fn run(init: std.process.Init) !u8 {
     defer gpa.free(access_logs);
     for (access_logs) |*r| r.* = try .init(likzik.observe.access_log.ring_bytes);
     defer for (access_logs) |*r| r.deinit();
+    // Declared before the workers' state so it is torn down after them.
+    var conn_pool = try likzik.upstream.shared_pool.SharedPool.init(gpa);
+    defer conn_pool.deinit();
     var health: likzik.upstream.active_health.ActiveHealth = undefined;
     try health.init(gpa);
     defer health.deinit();
     health.setTargets(first);
     try health.start();
-    var shared: worker_mod.Shared = .{ .rcu = &rcu, .stats = worker_stats, .ring_fds = ring_fds, .pin_cpus = args.pin, .pbuf_count = args.buffers, .ext_states = ext_states, .access_logs = access_logs, .ep_down = health.down, .health = &health };
+    var shared: worker_mod.Shared = .{ .rcu = &rcu, .stats = worker_stats, .ring_fds = ring_fds, .pin_cpus = args.pin, .pbuf_count = args.buffers, .ext_states = ext_states, .access_logs = access_logs, .ep_down = health.down, .health = &health, .conn_pool = &conn_pool };
 
     const threads = try gpa.alloc(std.Thread, n_workers);
     defer gpa.free(threads);

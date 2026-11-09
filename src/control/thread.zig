@@ -158,6 +158,7 @@ pub const Control = struct {
                 admin.serveOne(self, self.admin_fd);
             }
             self.flushAccessLogs();
+            if (self.shared.conn_pool) |sp| sp.sweep(worker_mod.Worker.nowMs());
             _ = self.shared.rcu.reclaim();
         }
         self.flushAccessLogs();

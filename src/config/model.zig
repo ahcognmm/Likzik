@@ -173,6 +173,9 @@ pub const Cluster = struct {
     /// Idle upstream connections are closed after this long.
     idle_timeout_ms: u32 = 30_000,
     max_idle_per_endpoint: u32 = 64,
+    /// Park idle connections beyond a worker's share in a pool all workers
+    /// draw from (plain and kTLS connections).
+    share_idle_connections: bool = true,
     /// Connect attempts on different endpoints before 502/503.
     max_connect_attempts: u8 = 2,
     /// Consecutive connect failures before an endpoint is ejected.
